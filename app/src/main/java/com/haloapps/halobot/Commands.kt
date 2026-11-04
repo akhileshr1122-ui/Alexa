@@ -441,7 +441,7 @@ private fun guessNumber(r: Robot, secret: Int, tries: Int) {
 
 private fun guessMood(r: Robot) {
     val mood = Faces.moodWords.keys.random()
-    r.setBusy(true)
+    r.markBusy(true)
     r.say("Guess my mood! Look at my face.", "neutral") {
         r.express(mood, 6000)
         r.main.postDelayed({

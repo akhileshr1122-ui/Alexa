@@ -168,7 +168,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
     }
 
     fun ask(q: String, expr: String = "curious", onAnswer: (String) -> Unit) {
-        setBusy(true)
+        markBusy(true)
         say(q, expr) { listen(onAnswer) }
     }
 
@@ -182,8 +182,8 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
         }
     }
 
-    fun setBusy(b: Boolean) { busy = b; if (b) busySince = now() }
-    fun done() { setBusy(false); lastAskAt = now() }
+    fun markBusy(b: Boolean) { busy = b; if (b) busySince = now() }
+    fun done() { markBusy(false); lastAskAt = now() }
 
     fun touch() {
         lastInteraction = now()
@@ -346,7 +346,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
     private fun tick() {
         val t = now()
         if (faceVisible && t - lastFaceAt > 800) { faceVisible = false; onFaceLost() }
-        if (busy && t - busySince > 40000) setBusy(false)
+        if (busy && t - busySince > 40000) markBusy(false)
 
         // mood drift
         happiness += (.6f - happiness) * .0005f
@@ -526,7 +526,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
         if (mode == Mode.ALARM) { endMode(); return }
         if (voice.listening) { voice.cancelListening(); return }
         voice.stopSpeaking()
-        setBusy(true)
+        markBusy(true)
         face.show("listening", 9000)
         motion.play("tick")
         listen { s ->
@@ -543,9 +543,9 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
         val rest = if (idx >= 0) raw.substring(idx + name.length).trim(' ', ',', '.') else raw.removePrefix("hey robot").trim()
         touch()
         if (rest.isBlank()) {
-            setBusy(true); express("listening", 6000); motion.play("tick")
+            markBusy(true); express("listening", 6000); motion.play("tick")
             listen { s -> if (s.isBlank()) done() else hear(s) }
-        } else { setBusy(true); hear(rest) }
+        } else { markBusy(true); hear(rest) }
     }
 
     fun hear(s: String) {
@@ -620,7 +620,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
     }
 
     fun tellJoke() {
-        setBusy(true)
+        markBusy(true)
         say(Content.jokes.random(), "smug") {
             express("laugh", 2000); motion.play("giggle")
             say("Ha ha ha!") { done() }
@@ -628,7 +628,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
     }
 
     fun tellFact() {
-        setBusy(true)
+        markBusy(true)
         say("Fun fact! " + Content.facts.random(), "excited") { done() }
     }
 
@@ -698,7 +698,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
     }
 
     fun hideAndSeek() {
-        setBusy(true)
+        markBusy(true)
         val token = startMode(Mode.HIDE_COUNT)
         face.setBase("closed")
         say("Okay! I'll close my eyes and count to ten. Go hide!") {
@@ -729,7 +729,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
     }
 
     fun staringContest() {
-        setBusy(true)
+        markBusy(true)
         say("Staring contest! Don't blink. Ready... set... go!", "determined") {
             startMode(Mode.STARE)
             face.setBase("stare")
@@ -750,7 +750,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
 
     fun breathe() {
         val token = startMode(Mode.BREATHE)
-        setBusy(true)
+        markBusy(true)
         face.setBase("relieved")
         say("Let's breathe together. Watch my eyes.") {
             fun round(n: Int) {
@@ -815,7 +815,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
 
     fun birthday() {
         val token = startMode(Mode.BIRTHDAY)
-        setBusy(true)
+        markBusy(true)
         face.cakeLit = true
         face.scene(Overlay.CAKE, 0)
         face.setBase("party")
