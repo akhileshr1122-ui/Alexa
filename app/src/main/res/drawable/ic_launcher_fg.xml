@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- left eye -->
+    <path
+        android:fillColor="#3FE3F2"
+        android:pathData="M36,38 h8 a7,7 0 0 1 7,7 v14 a7,7 0 0 1 -7,7 h-8 a7,7 0 0 1 -7,-7 v-14 a7,7 0 0 1 7,-7 z" />
+    <!-- right eye -->
+    <path
+        android:fillColor="#3FE3F2"
+        android:pathData="M64,38 h8 a7,7 0 0 1 7,7 v14 a7,7 0 0 1 -7,7 h-8 a7,7 0 0 1 -7,-7 v-14 a7,7 0 0 1 7,-7 z" />
+    <!-- happy lids -->
+    <path
+        android:fillColor="#05080C"
+        android:pathData="M27,70 Q40,54 53,70 Z M55,70 Q68,54 81,70 Z" />
+    <!-- glints -->
+    <path
+        android:fillColor="#CCFFFFFF"
+        android:pathData="M34,42 h4 v4 h-4 z M62,42 h4 v4 h-4 z" />
+</vector>
