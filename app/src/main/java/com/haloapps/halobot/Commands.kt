@@ -72,6 +72,10 @@ fun handleCommand(r: Robot, raw: String): Boolean {
     val ctx = r.act
     val say = { text: String, face: String -> r.say(text, face) { r.done() } }
 
+    // ---- diagnostics ----
+    if (t.has("spin test", "movement test", "motion test", "vibration test")) { r.done(); r.spinTest(); return true }
+    if (t.has("mic test", "microphone test", "hearing test")) { r.done(); r.micTest(); return true }
+
     // ---- stop / quiet ----
     if (t == "stop" || t.has("stop it", "stop that", "stop dancing", "stop the alarm", "turn off the alarm", "be quiet", "shut up", "shh", "silence")) {
         r.voice.stopSpeaking(); r.motion.stop()
@@ -211,7 +215,16 @@ fun handleCommand(r: Robot, raw: String): Boolean {
     if (t.has("weather", "temperature", "is it raining", "is it cold", "is it hot", "is it snowing", "forecast")) {
         val inCity = Regex("(?:in|at|for) ([a-z ]+)$").find(t)?.groupValues?.get(1)?.trim()?.takeIf { it.length > 2 && !it.startsWith("the ") }
         val city = inCity ?: r.prefs.city
-        if (city.isBlank()) { say("Which city do you live in? Tell me in settings, or ask, what's the weather in Toronto.", "curious"); return true }
+        if (city.isBlank()) {
+            r.ask("Which city do you live in?") { ans ->
+                val c = ans.removePrefix("i live in").removePrefix("in").trim()
+                if (c.isBlank()) { r.say("Okay, you can also set your city in my settings.", "curious") { r.done() }; return@ask }
+                r.prefs.city = c
+                r.done()
+                handleCommand(r, "weather")
+            }
+            return true
+        }
         r.face.show("thinking", 8000)
         Weather.fetch(city) { w ->
             r.face.clearTemp()
@@ -256,9 +269,15 @@ fun handleCommand(r: Robot, raw: String): Boolean {
     if (t.has("next song", "skip song", "skip this", "next track")) { mediaKey(ctx, KeyEvent.KEYCODE_MEDIA_NEXT); say("Next!", "cool"); return true }
     if (t.has("previous song", "last song", "go back a song")) { mediaKey(ctx, KeyEvent.KEYCODE_MEDIA_PREVIOUS); say("Going back!", "cool"); return true }
     if (t.has("pause music", "pause the music", "stop the music", "stop music")) { mediaKey(ctx, KeyEvent.KEYCODE_MEDIA_PAUSE); r.endMode(); say("Music paused.", "neutral"); return true }
-    if (t.has("play music", "play some music", "play a song", "resume music", "play my music")) {
+    if (t.has("play music", "play some music", "play a song", "resume music", "play my music", "music", "play a beat", "your music", "your beat")) {
+        val am = ctx.getSystemService(AudioManager::class.java)
+        if (t.has("your", "beat", "own")) { r.done(); r.playOwnMusic(); return true }
         mediaKey(ctx, KeyEvent.KEYCODE_MEDIA_PLAY)
-        r.done(); r.main.postDelayed({ r.dance(auto = true) }, 1200); return true
+        r.done()
+        r.main.postDelayed({
+            if (am?.isMusicActive == true) r.dance(auto = true) else r.playOwnMusic()
+        }, 1500)
+        return true
     }
     if (t.has("louder", "volume up", "turn it up")) {
         ctx.getSystemService(AudioManager::class.java)?.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_RAISE, 0)

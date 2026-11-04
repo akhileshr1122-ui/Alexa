@@ -25,6 +25,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
     val senses = Senses(act, this, motion)
     val vision = Vision(act, preview) { onSeen(it) }
     val ai = AiChat(prefs)
+    val box = MusicBox()
 
     var mode = Mode.NONE
     private var modeStart = 0L
@@ -60,6 +61,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
     var busy = false
     private var busySince = 0L
     private var lastAskAt = 0L
+    private var chatGap = 120_000L
     private var lastInteraction = SystemClock.uptimeMillis()
     private var lastListenEnd = 0L
     private var muteUntil = 0L
@@ -141,6 +143,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
         if (prefs.micReact && hasMic) senses.startMic()
         if (hasCamera) vision.start()
         vision.paused = false
+        if (started) runPendingTest()
     }
 
     fun pause() {
@@ -153,6 +156,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
 
     fun destroy() {
         main.removeCallbacks(tickRunnable)
+        box.stop()
         voice.shutdown()
         vision.close()
         tone?.release()
@@ -177,11 +181,13 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
         voice.listen { s ->
             face.listening = false
             lastListenEnd = now()
-            if (s.isNotBlank() && prefs.captions) face.caption("You: $s", 3500)
+            if (s.isNotBlank()) { if (prefs.captions) face.caption("You: $s", 3500); heardOk++ }
+            else if (voice.lastError.isNotBlank()) face.caption("(${voice.lastError} - ${voice.engineName.ifBlank { "no engine" }})", 4000)
             cb(s)
         }
     }
 
+    var heardOk = 0
     fun markBusy(b: Boolean) { busy = b; if (b) busySince = now() }
     fun done() { markBusy(false); lastAskAt = now() }
 
@@ -199,6 +205,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
         if (mode == Mode.CLOCK || mode == Mode.SLEEP_CLOCK || mode == Mode.ALARM) face.clearText()
         if (mode == Mode.BIRTHDAY) face.clearScene()
         if (mode == Mode.ALARM) motion.stop()
+        if (mode == Mode.DANCE) box.stop()
         mode = Mode.NONE; modeToken++
         face.scaleTarget = 1f
         seekFoundCb = null
@@ -224,6 +231,9 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
             face.lookTX = ((.5f - f.cx) * 2.3f).coerceIn(-1f, 1f)
             face.lookTY = ((f.cy - .45f) * 2.1f).coerceIn(-1f, 1f)
         }
+        // turn the whole phone toward you with vibration when you drift to the edge of view
+        if (mode == Mode.NONE && !sleeping && prefs.move && prefs.seek) followTurn(f)
+
         // mirror head tilt a little
         face.userTilt = if (abs(f.roll) > 12f) (-f.roll / 180f * 3.14159f * .5f).coerceIn(-.3f, .3f) else 0f
 
@@ -377,8 +387,9 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
 
         // face lost behaviour: look for the person by buzzing (Cycloramic-style creeping)
         val gone = t - lastFaceAt
-        if (!faceVisible && !sleeping && lastFaceAt > 0 && gone in 1500L..10000L && prefs.seek && prefs.move && hasCamera) {
-            if (t - lastSeekPulse > 1300) { lastSeekPulse = t; motion.play("spin") }
+        if (!faceVisible && !sleeping && lastFaceAt > 0 && gone in 1500L..20000L && prefs.seek && prefs.move && hasCamera && t > noMoveUntil) {
+            if (gone < 1700) lostYaw = senses.yawDeg
+            if (abs(senses.yawDeg - lostYaw) < 360f && t - lastSeekPulse > 1500) { lastSeekPulse = t; drivePulse(1200) }
         }
 
         // sleep logic
@@ -398,8 +409,9 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
 
         // chatty questions
         if (prefs.talk && prefs.chatty && !mutedChat() && faceVisible && !busy && !voice.speaking && !voice.listening &&
-            t - faceSince > 5000 && t - lastAskAt > Random.nextLong(45_000, 75_000)) {
+            t - faceSince > 10_000 && t - lastAskAt > chatGap) {
             lastAskAt = t
+            chatGap = Random.nextLong(100_000, 180_000)
             askRandomQuestion()
             return
         }
@@ -559,7 +571,18 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
             face.show("thinking", 10000)
             ai.ask(s, robotName, userName) { reply ->
                 face.clearTemp()
-                if (reply == null) { offlineChat(s, aiFailed = true); return@ask }
+                if (reply == null) {
+                    val e = ai.lastError
+                    when {
+                        prefs.apiKey.startsWith("sk-ant-oat") -> say("That key is a Claude login token, not an API key. I need an API key from console dot anthropic dot com. It starts with s k dash ant dash api.", "sad") { done() }
+                        e.contains("401") || e.contains("403") -> say("My AI key was rejected. Please check it in settings.", "sad") { done() }
+                        e.contains("404") || e.contains("400") -> say("My AI model name isn't working. Try clearing the model field in settings.", "confused") { done() }
+                        e.contains("429") -> say("My AI brain is out of credits or too busy right now.", "sad") { done() }
+                        else -> offlineChat(s, aiFailed = true)
+                    }
+                    if (e.isNotBlank()) face.caption("(AI: $e)", 6000)
+                    return@ask
+                }
                 val m = Regex("^\\[(\\w+)]\\s*").find(reply)
                 val emo = m?.groupValues?.get(1)?.lowercase()
                 val text = if (m != null) reply.substring(m.range.last + 1) else reply
@@ -976,6 +999,100 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
     override fun onMusic(playing: Boolean) {
         if (playing && prefs.micReact && mode == Mode.NONE && !sleeping && !busy && now() - lastAutoDance > 120_000) dance(auto = true)
         else if (!playing && mode == Mode.DANCE && autoDance) { endMode(); express("happy", 1500) }
+    }
+
+    // ---------------- vibration locomotion ----------------
+    private var lostYaw = 0f
+    private var noMoveUntil = 0L
+    private var offCenterSince = 0L
+    private var lastTurnPulse = 0L
+    private var turnTries = 0
+    private var turnMoved = 0f
+    private var warnedNoMove = false
+
+    /** One strong buzz; afterwards checks with the gyroscope whether the phone actually turned. */
+    fun drivePulse(ms: Long) {
+        val before = senses.yawDeg
+        motion.pulse(ms)
+        if (!senses.hasGyro) return
+        main.postDelayed({
+            val moved = abs(senses.yawDeg - before)
+            turnTries++; turnMoved += moved
+            if (turnTries >= 5) {
+                if (turnMoved < 6f) {
+                    noMoveUntil = now() + 10 * 60_000L
+                    if (!warnedNoMove) {
+                        warnedNoMove = true
+                        face.caption("(Vibration isn't turning the phone on this surface)", 6000)
+                        say("I'm buzzing but I can't turn on this surface. Stand me on my edge, without a case, on something smooth and hard, or on a turntable.", "sad")
+                    }
+                }
+                turnTries = 0; turnMoved = 0f
+            }
+        }, ms + 300)
+    }
+
+    private fun followTurn(f: Vision.FaceInfo) {
+        val t = now()
+        if (t < noMoveUntil || busy || voice.speaking) { offCenterSince = 0; return }
+        if (abs(f.cx - .5f) > .3f) {
+            if (offCenterSince == 0L) offCenterSince = t
+            if (t - offCenterSince > 700 && t - lastTurnPulse > 1600) { lastTurnPulse = t; drivePulse(700) }
+        } else offCenterSince = 0
+    }
+
+    fun spinTest() {
+        if (!senses.hasGyro) { say("I don't have a gyroscope, so I can't measure turning. Watch me buzz!", "confused"); motion.pulse(4000); return }
+        markBusy(true)
+        say("Spin test! Put me on a smooth table, standing on my edge. Buzzing in three, two, one.", "determined") {
+            val before = senses.yawDeg
+            motion.pulse(5000)
+            face.show("dizzy", 5200)
+            main.postDelayed({
+                val deg = abs(senses.yawDeg - before).toInt()
+                face.showText("$deg°", 5000, "turned")
+                val verdict = when {
+                    deg >= 30 -> { noMoveUntil = 0; warnedNoMove = false; "Great, I can move on this surface!" }
+                    deg >= 8 -> "I can move a little. A smoother surface or a turntable will help."
+                    else -> "I barely moved. Try taking off the case, standing me on my edge, or using a lazy susan."
+                }
+                say("I turned $deg degrees. $verdict", if (deg >= 30) "proud" else "sad") { done() }
+            }, 5500)
+        }
+    }
+
+    fun micTest() {
+        markBusy(true)
+        say("Microphone test. Say something after the beep.", "listening") {
+            motion.play("tick")
+            listen { s ->
+                if (s.isNotBlank()) say("I heard: $s. My ears work, using the ${voice.engineName} speech engine!", "joy") { done() }
+                else say("I didn't hear anything. The problem is: ${voice.lastError.ifBlank { "unknown" }}. Engine: ${voice.engineName.ifBlank { "none" }}. Make sure the Google app is installed and updated.", "sad") { done() }
+            }
+        }
+    }
+
+    fun playOwnMusic() {
+        val token = startMode(Mode.DANCE)
+        autoDance = false
+        face.setBase("dance")
+        say("Here's my own beat! Let's dance!", "party") {
+            if (!alive(token)) return@say
+            box.play(24) { main.post { if (alive(token)) beatLoop(token, 0) } }
+        }
+    }
+
+    private fun beatLoop(token: Int, i: Int) {
+        if (!alive(token) || !box.playing) { if (alive(token)) { endMode(); express("proud", 1500) }; return }
+        danceStep(null, i)
+        main.postDelayed({ beatLoop(token, i + 1) }, box.beatMs)
+    }
+
+    fun runPendingTest() {
+        val tst = prefs.pendingTest
+        if (tst.isBlank()) return
+        prefs.pendingTest = ""
+        main.postDelayed({ if (tst == "spin") spinTest() else if (tst == "mic") micTest() }, 1200)
     }
 
     // ---------------- stats ----------------

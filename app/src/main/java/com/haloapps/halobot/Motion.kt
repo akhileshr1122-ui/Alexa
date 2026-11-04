@@ -1,6 +1,9 @@
 package com.haloapps.halobot
 
 import android.content.Context
+import android.media.AudioAttributes
+import android.os.Build
+import android.os.VibrationAttributes
 import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -30,14 +33,24 @@ class Motion(ctx: Context) {
         val v = vib ?: return
         if (!enabled || !v.hasVibrator()) return
         busyUntil = SystemClock.uptimeMillis() + timings.sum() + 200
-        try { v.vibrate(VibrationEffect.createWaveform(timings, amps, -1)) } catch (_: Exception) {}
+        doVibrate(v, VibrationEffect.createWaveform(timings, amps, -1))
     }
 
     fun pulse(ms: Long, amp: Int = 255) {
         val v = vib ?: return
         if (!enabled || !v.hasVibrator()) return
         busyUntil = SystemClock.uptimeMillis() + ms + 200
-        try { v.vibrate(VibrationEffect.createOneShot(ms, amp.coerceIn(1, 255))) } catch (_: Exception) {}
+        doVibrate(v, VibrationEffect.createOneShot(ms, amp.coerceIn(1, 255)))
+    }
+
+    /** Alarm usage so vibration still works when the phone is on silent / vibrate-off for notifications. */
+    private fun doVibrate(v: Vibrator, e: VibrationEffect) {
+        try {
+            if (Build.VERSION.SDK_INT >= 33) v.vibrate(e, VibrationAttributes.createForUsage(VibrationAttributes.USAGE_ALARM))
+            else @Suppress("DEPRECATION") v.vibrate(e, AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM).build())
+        } catch (_: Exception) {
+            try { v.vibrate(e) } catch (_: Exception) {}
+        }
     }
 
     fun stop() { try { vib?.cancel() } catch (_: Exception) {} }
@@ -59,6 +72,7 @@ class Motion(ctx: Context) {
             "sad" to p(400L to 120, 200L to 0, 250L to 70),
             "hop" to p(240L to 255),
             "spin" to p(700L to 255),
+            "drive" to p(1200L to 255),
             "shy" to p(40L to 120, 120L to 0, 40L to 120),
             "heartbeat" to p(60L to 255, 100L to 0, 60L to 200, 650L to 0, 60L to 255, 100L to 0, 60L to 200),
             "sneeze" to p(60L to 80, 250L to 0, 200L to 255),

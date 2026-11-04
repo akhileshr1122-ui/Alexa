@@ -54,6 +54,7 @@ class Prefs(ctx: Context) {
     var greetings: Int get() = int("greetings", 0); set(v) = putInt("greetings", v)
     var aiTipShown: Boolean get() = bool("aiTipShown", false); set(v) = putBool("aiTipShown", v)
     var birthdayDoneYear: Int get() = int("birthdayDoneYear", 0); set(v) = putInt("birthdayDoneYear", v)
+    var pendingTest: String get() = str("pendingTest", ""); set(v) = putStr("pendingTest", v)
     var favoriteColor: String get() = str("favColor", ""); set(v) = putStr("favColor", v)
     var favoriteFood: String get() = str("favFood", ""); set(v) = putStr("favFood", v)
 }

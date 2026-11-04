@@ -100,7 +100,7 @@ class SettingsActivity : ComponentActivity() {
 
         header("Behaviour")
         toggle("Move with vibration", prefs.move) { prefs.move = it }
-        toggle("Buzz around looking for me when I leave", prefs.seek) { prefs.seek = it }
+        toggle("Turn toward me / search for me with vibration", prefs.seek) { prefs.seek = it }
         toggle("Talk", prefs.talk) { prefs.talk = it }
         toggle("Ask me questions on its own", prefs.chatty) { prefs.chatty = it }
         toggle("React to sounds & dance to music", prefs.micReact) { prefs.micReact = it }
@@ -123,9 +123,24 @@ class SettingsActivity : ComponentActivity() {
             }
         })
 
+        header("Tests")
+        note("Run these if the robot doesn't hear you or doesn't move. The robot will do the test and tell you the result.")
+        col.addView(Button(this).apply {
+            text = "Microphone test"
+            setOnClickListener { saves.forEach { s -> s() }; prefs.pendingTest = "mic"; finish() }
+        })
+        col.addView(Button(this).apply {
+            text = "Spin test (vibration movement)"
+            setOnClickListener { saves.forEach { s -> s() }; prefs.pendingTest = "spin"; finish() }
+        })
+
         header("AI brain (optional)")
         note("Add a Claude API key from console.anthropic.com to let your robot answer anything. Without it, the robot still works offline with 100+ built-in commands. Your key stays on this phone and is only sent to Anthropic's API.")
-        field("Claude API key", prefs.apiKey, "sk-ant-...", password = true) { prefs.apiKey = it }
+        if (prefs.apiKey.startsWith("sk-ant-oat")) col.addView(TextView(this).apply {
+            text = "⚠ The saved key starts with sk-ant-oat. That's a Claude subscription login token (from Claude Code), not an API key, so it won't work here. Create an API key at console.anthropic.com → API Keys. It starts with sk-ant-api."
+            setTextColor(0xFFFF7A7A.toInt()); textSize = 13f; setPadding(0, (6 * d).toInt(), 0, (6 * d).toInt())
+        })
+        field("Claude API key (starts with sk-ant-api)", prefs.apiKey, "sk-ant-api03-...", password = true) { prefs.apiKey = it }
         field("Model", prefs.aiModel, "claude-haiku-5-5") { prefs.aiModel = it.ifBlank { "claude-haiku-5-5" } }
 
         header("Stats")
@@ -149,6 +164,7 @@ class SettingsActivity : ComponentActivity() {
             "• breathe with me · how are you · I love you · how long have we been friends\n" +
             "• my name is ... · your name is ... · my birthday is April 21 · my favorite food is ...\n" +
             "• change your eye color to pink · be quiet · stop\n" +
+            "• mic test · spin test · play your beat\n" +
             "Physical: pet it, poke it, pick it up, shake it, turn it face down, wave over the top sensor, cover it in the dark, plug in the charger, play music nearby."
         )
     }

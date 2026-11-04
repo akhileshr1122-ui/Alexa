@@ -1,11 +1,14 @@
 package com.haloapps.halobot
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.speech.RecognitionListener
+import android.speech.RecognitionService
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
@@ -19,13 +22,21 @@ class Voice(private val ctx: Context, private val prefs: Prefs) {
     private var ready = false
     private val pending = HashMap<String, () -> Unit>()
     private var counter = 0
+
+    // recognizers, tried in order until one works: 0 = Google service, 1 = phone default, 2 = on-device
     private var sr: SpeechRecognizer? = null
+    private var srKind = -1
+    private var workingKind = 0
+    private var session = 0
 
     var speaking = false; private set
     var listening = false; private set
     var onSpeaking: ((Boolean) -> Unit)? = null
     var onListening: ((Boolean) -> Unit)? = null
     var onLevel: ((Float) -> Unit)? = null
+    /** Human-readable reason the last listen produced nothing ("" when it worked). */
+    var lastError = ""; private set
+    var engineName = ""; private set
 
     init {
         tts = TextToSpeech(ctx) { status ->
@@ -76,51 +87,123 @@ class Voice(private val ctx: Context, private val prefs: Prefs) {
         onSpeaking?.invoke(false)
     }
 
+    private fun googleService(): ComponentName? = try {
+        val list = ctx.packageManager.queryIntentServices(Intent(RecognitionService.SERVICE_INTERFACE), 0)
+        val g = list.firstOrNull { it.serviceInfo.packageName == "com.google.android.googlequicksearchbox" }
+            ?: list.firstOrNull { it.serviceInfo.packageName.startsWith("com.google.android") }
+        g?.let { ComponentName(it.serviceInfo.packageName, it.serviceInfo.name) }
+    } catch (_: Exception) { null }
+
+    private fun recognizer(kind: Int): SpeechRecognizer? {
+        if (sr != null && srKind == kind) return sr
+        try { sr?.destroy() } catch (_: Exception) {}
+        sr = null; srKind = -1
+        val r = try {
+            when (kind) {
+                0 -> googleService()?.let { engineName = "Google"; SpeechRecognizer.createSpeechRecognizer(ctx, it) }
+                1 -> if (SpeechRecognizer.isRecognitionAvailable(ctx)) { engineName = "phone default"; SpeechRecognizer.createSpeechRecognizer(ctx) } else null
+                2 -> if (Build.VERSION.SDK_INT >= 31 && SpeechRecognizer.isOnDeviceRecognitionAvailable(ctx)) { engineName = "on-device"; SpeechRecognizer.createOnDeviceSpeechRecognizer(ctx) } else null
+                else -> null
+            }
+        } catch (_: Exception) { null }
+        if (r != null) { sr = r; srKind = kind }
+        return r
+    }
+
+    private fun errText(code: Int): String = when (code) {
+        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "I didn't hear any speech"
+        SpeechRecognizer.ERROR_NO_MATCH -> "I heard you but couldn't make out words"
+        SpeechRecognizer.ERROR_AUDIO -> "microphone error"
+        SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "speech needs internet"
+        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "microphone permission missing"
+        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "speech engine busy"
+        SpeechRecognizer.ERROR_CLIENT -> "speech engine error"
+        else -> "speech error $code"
+    }
+
+    /** Listens once; [cb] gets the lowercase transcript, or "" (see [lastError]). */
     fun listen(cb: (String) -> Unit) {
-        if (!SpeechRecognizer.isRecognitionAvailable(ctx)) { cb(""); return }
         if (listening) { cb(""); return }
-        val r = sr ?: SpeechRecognizer.createSpeechRecognizer(ctx).also { sr = it }
+        val my = ++session
+        listening = true
+        lastError = ""
+        onListening?.invoke(true) // lets the robot free the microphone first
         var done = false
+        var partial = ""
         val finish: (String) -> Unit = { s ->
-            if (!done) {
+            if (!done && my == session) {
                 done = true
                 listening = false
                 onListening?.invoke(false)
                 cb(s)
             }
         }
-        r.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) {}
-            override fun onBeginningOfSpeech() {}
-            override fun onRmsChanged(rmsdB: Float) { onLevel?.invoke(((rmsdB + 2f) / 12f).coerceIn(0f, 1f)) }
-            override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() {}
-            override fun onError(error: Int) { finish("") }
-            override fun onResults(results: Bundle?) {
-                val l = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                finish(l?.firstOrNull()?.lowercase(Locale.US)?.trim() ?: "")
+
+        fun attempt(kind: Int, triesLeft: Int) {
+            if (done || my != session) return
+            val r = recognizer(kind)
+            if (r == null) {
+                if (kind < 2) attempt(kind + 1, triesLeft) else { lastError = "no speech engine on this phone"; finish("") }
+                return
             }
-            override fun onPartialResults(partialResults: Bundle?) {}
-            override fun onEvent(eventType: Int, params: Bundle?) {}
-        })
-        val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, ctx.packageName)
+            r.setRecognitionListener(object : RecognitionListener {
+                override fun onReadyForSpeech(params: Bundle?) {}
+                override fun onBeginningOfSpeech() {}
+                override fun onRmsChanged(rmsdB: Float) { onLevel?.invoke(((rmsdB + 2f) / 12f).coerceIn(0f, 1f)) }
+                override fun onBufferReceived(buffer: ByteArray?) {}
+                override fun onEndOfSpeech() {}
+                override fun onError(error: Int) {
+                    if (done || my != session) return
+                    val engineProblem = error == SpeechRecognizer.ERROR_CLIENT || error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY ||
+                        error == SpeechRecognizer.ERROR_AUDIO || error == 11 || error == 12 || error == 13
+                    if (partial.isNotBlank()) { lastError = ""; finish(partial); return }
+                    if (engineProblem && triesLeft > 0) {
+                        try { r.destroy() } catch (_: Exception) {}
+                        sr = null; srKind = -1
+                        main.postDelayed({ attempt(if (kind < 2) kind + 1 else 0, triesLeft - 1) }, 400)
+                        return
+                    }
+                    lastError = errText(error)
+                    finish("")
+                }
+                override fun onResults(results: Bundle?) {
+                    val l = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    val s = l?.firstOrNull()?.lowercase(Locale.US)?.trim().orEmpty().ifBlank { partial }
+                    if (s.isNotBlank()) { workingKind = kind; lastError = "" } else lastError = "I couldn't make out words"
+                    finish(s)
+                }
+                override fun onPartialResults(partialResults: Bundle?) {
+                    val l = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    l?.firstOrNull()?.takeIf { it.isNotBlank() }?.let { partial = it.lowercase(Locale.US).trim() }
+                }
+                override fun onEvent(eventType: Int, params: Bundle?) {}
+            })
+            val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, ctx.packageName)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
+            }
+            try { r.startListening(i) } catch (e: Exception) {
+                if (triesLeft > 0) main.postDelayed({ attempt(if (kind < 2) kind + 1 else 0, triesLeft - 1) }, 300)
+                else { lastError = "speech engine wouldn't start"; finish("") }
+            }
         }
-        listening = true
-        onListening?.invoke(true)
-        try { r.startListening(i) } catch (e: Exception) { finish("") }
+
+        // give the robot's own microphone listener time to let go of the mic
+        main.postDelayed({ attempt(workingKind, 2) }, 350)
         main.postDelayed({
-            if (!done) {
-                try { r.stopListening() } catch (_: Exception) {}
-                main.postDelayed({ finish("") }, 1500)
+            if (!done && my == session) {
+                try { sr?.stopListening() } catch (_: Exception) {}
+                main.postDelayed({ if (partial.isNotBlank()) finish(partial) else { if (lastError.isEmpty()) lastError = "I didn't hear any speech"; finish("") } }, 1800)
             }
-        }, 9000)
+        }, 10000)
     }
 
     fun cancelListening() {
+        session++
         try { sr?.cancel() } catch (_: Exception) {}
         if (listening) { listening = false; onListening?.invoke(false) }
     }

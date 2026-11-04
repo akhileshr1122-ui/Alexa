@@ -62,10 +62,12 @@ object Weather {
 class AiChat(private val prefs: Prefs) {
     private val history = ArrayList<Pair<String, String>>()
     val enabled: Boolean get() = prefs.apiKey.isNotBlank()
+    @Volatile var lastError = ""
 
     fun ask(text: String, robotName: String, userName: String, cb: (String?) -> Unit) {
         thread {
-            val reply = try { call(text, robotName, userName) } catch (e: Exception) { null }
+            lastError = ""
+            val reply = try { call(text, robotName, userName) } catch (e: Exception) { lastError = e.javaClass.simpleName + ": " + (e.message ?: ""); null }
             mainHandler.post { cb(reply) }
         }
     }
@@ -97,7 +99,12 @@ class AiChat(private val prefs: Prefs) {
             c.setRequestProperty("x-api-key", prefs.apiKey)
             c.setRequestProperty("anthropic-version", "2023-06-01")
             c.outputStream.use { it.write(body.toString().toByteArray()) }
-            if (c.responseCode !in 200..299) { history.removeAt(history.size - 1); return null }
+            val code = c.responseCode
+            if (code !in 200..299) {
+                val err = try { c.errorStream?.bufferedReader()?.readText()?.take(160) } catch (_: Exception) { null }
+                lastError = "HTTP $code ${err ?: ""}".trim()
+                history.removeAt(history.size - 1); return null
+            }
             val resp = JSONObject(c.inputStream.bufferedReader().readText())
             val arr = resp.getJSONArray("content")
             val sb = StringBuilder()

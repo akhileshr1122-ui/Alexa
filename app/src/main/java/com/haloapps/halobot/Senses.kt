@@ -95,6 +95,7 @@ class Senses(private val act: Activity, private val l: Listener, private val mot
         if (started) return
         started = true
         sm?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
+        sm?.getDefaultSensor(Sensor.TYPE_GYROSCOPE)?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
         sm?.getDefaultSensor(Sensor.TYPE_LIGHT)?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
         sm?.getDefaultSensor(Sensor.TYPE_PROXIMITY)?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
         ContextCompat.registerReceiver(act, batt, IntentFilter(Intent.ACTION_BATTERY_CHANGED), ContextCompat.RECEIVER_EXPORTED)
@@ -113,6 +114,7 @@ class Senses(private val act: Activity, private val l: Listener, private val mot
     override fun onSensorChanged(e: SensorEvent) {
         when (e.sensor.type) {
             Sensor.TYPE_ACCELEROMETER -> accel(e.values)
+            Sensor.TYPE_GYROSCOPE -> gyro(e.values, e.timestamp)
             Sensor.TYPE_LIGHT -> light(e.values[0])
             Sensor.TYPE_PROXIMITY -> prox(e.values[0], e.sensor.maximumRange)
         }
@@ -163,6 +165,22 @@ class Senses(private val act: Activity, private val l: Listener, private val mot
             else -> -g[0] / 9.8f
         }
         if (kotlin.math.abs(gx - tiltSent) > .04f) { tiltSent = gx; l.onTilt(gx) }
+    }
+
+    /** Total rotation around the vertical (gravity) axis, in degrees. Used to know if vibration actually turned the phone. */
+    @Volatile var yawDeg = 0f
+    val hasGyro: Boolean get() = sm?.getDefaultSensor(Sensor.TYPE_GYROSCOPE) != null
+    private var lastGyroTs = 0L
+    private fun gyro(v: FloatArray, ts: Long) {
+        if (lastGyroTs != 0L && gInit) {
+            val dt = (ts - lastGyroTs) / 1e9f
+            val gn = sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2])
+            if (gn > 1f && dt in 0f..0.2f) {
+                val yawRate = (v[0] * g[0] + v[1] * g[1] + v[2] * g[2]) / gn
+                yawDeg += Math.toDegrees((yawRate * dt).toDouble()).toFloat()
+            }
+        }
+        lastGyroTs = ts
     }
 
     private val darkCheck = Runnable {
