@@ -16,7 +16,7 @@ data class Eye(
 
 enum class EyeStyle { NORMAL, HEART, STAR, SPIRAL, CROSS, SHADES, ARC, LINE, DOT }
 enum class Mouth { NONE, SMILE, GRIN, O, SMALL_O, FROWN, FLAT, WAVY, TONGUE, CAT, CHOMP, BIG_O }
-enum class Overlay { NONE, ZZZ, TEARS, SWEAT, QUESTION, EXCLAIM, NOTES, ANGER, HEARTS, SPARKLES, SNOW, RAIN, SUN, CLOUD, STORM, CAKE, PUMPKIN, CONFETTI, BOLT, STEAM }
+enum class Overlay { NONE, ZZZ, TEARS, SWEAT, QUESTION, EXCLAIM, NOTES, ANGER, HEARTS, SPARKLES, SNOW, RAIN, SUN, CLOUD, STORM, CAKE, PUMPKIN, CONFETTI, BOLT, STEAM, BUBBLES, PETALS }
 
 data class Face(
     val l: Eye,
@@ -91,6 +91,11 @@ object Faces {
         "party" to Face(Eye(), style = EyeStyle.STAR, mouth = Mouth.GRIN, overlay = Overlay.CONFETTI, cheeks = true),
         "kiss" to Face(Eye(), style = EyeStyle.ARC, rStyle = EyeStyle.HEART, mouth = Mouth.SMALL_O, cheeks = true, overlay = Overlay.HEARTS),
         "embarrassed" to Face(Eye(.85f, .7f, top = .2f, dy = .12f), mouth = Mouth.WAVY, cheeks = true, tint = PINK),
+        "lovestruck" to Face(Eye(), style = EyeStyle.HEART, mouth = Mouth.GRIN, overlay = Overlay.HEARTS, cheeks = true, tint = PINK, jitterY = .012f),
+        "dying" to Face(Eye(.9f, .7f, top = .4f, ang = -.3f, dy = .15f), mouth = Mouth.WAVY, tint = BLUE),
+        "pout" to Face(Eye(1f, .8f, top = .35f, ang = .35f), mouth = Mouth.FROWN, cheeks = true, overlay = Overlay.ANGER, tint = RED),
+        "showering" to Face(Eye(), style = EyeStyle.ARC, mouth = Mouth.SMILE, cheeks = true),
+        "slurp" to Face(Eye(bot = .35f), mouth = Mouth.SMALL_O, cheeks = true),
         "determined" to Face(Eye(1.05f, .85f, top = .3f, ang = .25f), mouth = Mouth.FLAT, overlay = Overlay.SPARKLES),
     )
 

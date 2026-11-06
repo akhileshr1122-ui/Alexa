@@ -94,6 +94,38 @@ class FaceView(context: Context) : View(context) {
 
     private var lastFrame = 0L
 
+    // ---------- props & extras (kid mode) ----------
+    enum class PropKind { NONE, APPLE, BANANA, PIZZA, DONUT, CAKE, SANDWICH, CARROT, ORANGE, BROCCOLI, HOTDOG, FOOD, WATER, BEER, FLOWERS }
+    var prop = PropKind.NONE
+    var propBites = 0
+    var propRaise = 0f        // 0 = resting, 1 = raised for cheers
+    private var propRaiseNow = 0f
+    private var clinkStart = -1L
+    var headphones = false
+    var gentleman = false
+    var banner: String? = null
+    private var bannerUntil = 0L
+    var ambient: Overlay = Overlay.NONE
+    private var crackX = -1f
+    private var crackY = -1f
+    private var crackStart = -1L
+    var ballOn = false
+    private var ballX = 0f; private var ballY = 0f; private var ballVX = 0f; private var ballVY = 0f
+    private var ballSpin = 0f
+    private var faceCx = 0f; private var faceCy = 0f; private var faceBase = 1f
+
+    fun showBanner(text: String, ms: Long) { banner = text; bannerUntil = if (ms <= 0) Long.MAX_VALUE else SystemClock.uptimeMillis() + ms }
+    fun clink() { clinkStart = SystemClock.uptimeMillis() }
+    fun crack(nx: Float, ny: Float) { crackX = nx; crackY = ny; crackStart = SystemClock.uptimeMillis() }
+    fun clearCrack() { crackStart = -1 }
+    val cracked: Boolean get() = crackStart > 0
+    fun startBall() {
+        ballOn = true
+        ballX = width * .2f; ballY = height * .3f
+        ballVX = width * .55f * (if (Math.random() < .5) 1 else -1); ballVY = 0f
+    }
+    fun kickBall() { if (ballOn) { ballVY = -height * 1.4f; ballVX += (Math.random().toFloat() - .5f) * width * .6f } }
+
     // paints
     private val eyePaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND }
@@ -137,6 +169,7 @@ class FaceView(context: Context) : View(context) {
         val f = face
         val k = 1f - exp(-dt * 14f)
         le.lerp(f.l, k); re.lerp(f.r, k)
+        if (ballOn && width > 0) { lookTX = ((ballX / width) - .5f) * 2.2f; lookTY = ((ballY / height) - .45f) * 2f }
         val kl = 1f - exp(-dt * 9f)
         lookX += (lookTX + gravityX * .8f - lookX) * kl
         lookY += (lookTY - lookY) * kl
@@ -183,6 +216,7 @@ class FaceView(context: Context) : View(context) {
             val cx = w / 2 + lookX * base * .55f + jx
             val cy = h / 2 - base * .12f + lookY * base * .35f + bob + jy + hopY
 
+            faceCx = cx; faceCy = cy; faceBase = base * scale
             c.save()
             c.translate(cx, cy)
             c.rotate(Math.toDegrees(tilt.toDouble()).toFloat() + spinA)
@@ -205,6 +239,10 @@ class FaceView(context: Context) : View(context) {
             c.restore()
         }
         if (sceneOverlay != Overlay.NONE) drawScene(c, sceneOverlay, w, h, base, glow, t)
+        if (ambient != Overlay.NONE && sceneOverlay == Overlay.NONE) { c.save(); c.clipRect(0f, 0f, w, h); drawScene(c, ambient, w, h, base, glow, t); c.restore() }
+        if (!textOn && !diceOn) drawExtras(c, w, h, base, glow, top, t, dt, now)
+        banner?.let { if (now < bannerUntil) drawText(c, it, w / 2, h * .16f, h * .1f, glow) else banner = null }
+        if (crackStart > 0) drawCrack(c, w, h, base, now)
 
         if (listening) drawListening(c, w, h, base, glow, t)
         caption?.let { if (now < captionUntil) drawCaption(c, it, w, h, base) else caption = null }
@@ -540,6 +578,22 @@ class FaceView(context: Context) : View(context) {
             }
             Overlay.CAKE -> drawCake(c, w / 2, h * .82f, base * .55f, t)
             Overlay.PUMPKIN -> drawPumpkin(c, w * .88f, h * .78f, base * .4f, t)
+            Overlay.BUBBLES -> {
+                drawScene(c, Overlay.RAIN, w, h, base, glow, t)
+                linePaint.color = 0xCCBFEFFF.toInt(); linePaint.strokeWidth = 3f
+                for (i in 0 until 18) {
+                    val sx = (i * 113.7f) % w
+                    val p = ((t * (.12f + (i % 4) * .03f) + i * .13f) % 1f)
+                    val r = 10f + (i % 5) * 7f
+                    c.drawCircle(sx + kotlin.math.sin(t * 2 + i) * 20f, h - p * (h + 60), r, linePaint)
+                }
+            }
+            Overlay.PETALS -> for (i in 0 until 22) {
+                val sx = (i * 97.1f) % w
+                val y = ((t * (.1f + (i % 5) * .03f) + i * .09f) % 1f) * (h + 40) - 20
+                fillPaint.color = if (i % 2 == 0) 0xFFFF8FB8.toInt() else 0xFFFF4F8B.toInt()
+                c.save(); c.rotate(t * 90f + i * 40f, sx, y); c.drawOval(RectF(sx - 9f, y - 5f, sx + 9f, y + 5f), fillPaint); c.restore()
+            }
             Overlay.HEARTS -> for (i in 0 until 14) {
                 val sx = (i * 89.3f) % w
                 val p = ((t * .15f + i * .11f) % 1f)
@@ -629,4 +683,198 @@ class FaceView(context: Context) : View(context) {
         val text = if (s.length > 90) s.take(87) + "..." else s
         c.drawText(text, w / 2, h - base * .08f, capPaint)
     }
+    // ================= extras =================
+    private fun drawExtras(c: Canvas, w: Float, h: Float, base0: Float, glow: Int, top: Int, t: Float, dt: Float, now: Long) {
+        val base = faceBase
+        val gap = base * .98f
+        // headphones (blue band over the head, cups beside the eyes)
+        if (headphones) {
+            val blue = 0xFF2F7BFF.toInt()
+            linePaint.color = blue; linePaint.strokeWidth = base * .16f; linePaint.setShadowLayer(base * .2f, 0f, 0f, blue)
+            val r = RectF(faceCx - gap * 1.75f, faceCy - base * 1.55f, faceCx + gap * 1.75f, faceCy + base * 1.2f)
+            c.drawArc(r, 200f, 140f, false, linePaint); linePaint.clearShadowLayer()
+            fillPaint.color = blue; fillPaint.setShadowLayer(base * .25f, 0f, 0f, blue)
+            val bob = kotlin.math.sin(t * 6.3f) * base * .03f
+            for (sx in intArrayOf(-1, 1)) {
+                val x = faceCx + sx * gap * 1.72f
+                c.drawRoundRect(RectF(x - base * .2f, faceCy - base * .45f + bob, x + base * .2f, faceCy + base * .35f + bob), base * .16f, base * .16f, fillPaint)
+            }
+            fillPaint.clearShadowLayer()
+            fillPaint.color = 0xFF9CC4FF.toInt()
+            for (sx in intArrayOf(-1, 1)) c.drawCircle(faceCx + sx * gap * 1.72f, faceCy - base * .05f + bob, base * .07f, fillPaint)
+        }
+        // gentleman: top hat + bow tie
+        if (gentleman) {
+            fillPaint.color = 0xFF15151A.toInt(); linePaint.color = glow; linePaint.strokeWidth = base * .04f
+            val hy = faceCy - base * 1.0f
+            val brim = RectF(faceCx - base * 1.1f, hy - base * .1f, faceCx + base * 1.1f, hy + base * .06f)
+            val crown = RectF(faceCx - base * .65f, hy - base * .95f, faceCx + base * .65f, hy - base * .05f)
+            c.drawRoundRect(crown, base * .08f, base * .08f, fillPaint); c.drawRoundRect(crown, base * .08f, base * .08f, linePaint)
+            c.drawRoundRect(brim, base * .06f, base * .06f, fillPaint); c.drawRoundRect(brim, base * .06f, base * .06f, linePaint)
+            fillPaint.color = 0xFFFF4F8B.toInt(); c.drawRect(faceCx - base * .65f, hy - base * .3f, faceCx + base * .65f, hy - base * .16f, fillPaint)
+            // bow tie under the mouth
+            val by = faceCy + base * 1.45f
+            fillPaint.color = 0xFFFF4F8B.toInt()
+            tmpPath.reset()
+            tmpPath.moveTo(faceCx, by); tmpPath.lineTo(faceCx - base * .38f, by - base * .2f); tmpPath.lineTo(faceCx - base * .38f, by + base * .2f); tmpPath.close()
+            tmpPath.moveTo(faceCx, by); tmpPath.lineTo(faceCx + base * .38f, by - base * .2f); tmpPath.lineTo(faceCx + base * .38f, by + base * .2f); tmpPath.close()
+            c.drawPath(tmpPath, fillPaint)
+            c.drawCircle(faceCx, by, base * .08f, fillPaint)
+        }
+        // prop in a little hand
+        if (prop != PropKind.NONE) {
+            propRaiseNow += (propRaise - propRaiseNow) * (1f - exp(-dt * 7f))
+            val hx = faceCx + gap * 1.55f - propRaiseNow * gap * .7f
+            val hy = faceCy + base * 1.25f - propRaiseNow * base * .9f
+            var tiltDeg = -propRaiseNow * 15f
+            if (clinkStart > 0) {
+                val p = (now - clinkStart) / 600f
+                if (p >= 1f) clinkStart = -1 else tiltDeg += kotlin.math.sin(p * PI.toFloat() * 3) * 18f
+            }
+            c.save(); c.translate(hx, hy); c.rotate(tiltDeg)
+            drawProp(c, prop, base * .55f, t)
+            // the hand: a small mitten in eye color
+            fillPaint.color = ColorUtils.blendARGB(top, Color.WHITE, .2f)
+            fillPaint.setShadowLayer(base * .12f, 0f, 0f, glow)
+            c.drawRoundRect(RectF(-base * .22f, base * .05f, base * .22f, base * .38f), base * .14f, base * .14f, fillPaint)
+            c.drawRoundRect(RectF(-base * .3f, base * .08f, -base * .12f, base * .24f), base * .08f, base * .08f, fillPaint)
+            fillPaint.clearShadowLayer()
+            c.restore()
+            if (clinkStart > 0) {
+                val p = (now - clinkStart) / 600f
+                drawText(c, "CLINK!", hx, hy - base * 1.0f - p * base * .4f, base * .32f, 0xFFFFD23F.toInt(), ((1 - p).coerceIn(0f, 1f) * 255).toInt())
+                for (i in 0 until 6) {
+                    val a = i * PI.toFloat() / 3
+                    fillPaint.color = Color.WHITE; fillPaint.alpha = ((1 - p).coerceIn(0f, 1f) * 255).toInt()
+                    starPath(tmpPath, hx + kotlin.math.cos(a) * base * (.4f + p * .5f), hy - base * .5f + kotlin.math.sin(a) * base * (.4f + p * .5f), base * .08f, p * 90f)
+                    c.drawPath(tmpPath, fillPaint)
+                }
+                fillPaint.alpha = 255
+            }
+        }
+        // bouncing ball
+        if (ballOn) {
+            val g = h * 2.6f
+            ballVY += g * dt
+            ballX += ballVX * dt; ballY += ballVY * dt
+            val r = base * .28f
+            if (ballY > h - r) { ballY = h - r; ballVY = -kotlin.math.abs(ballVY) * .82f; if (kotlin.math.abs(ballVY) < h * .5f) ballVY = -h * 1.3f }
+            if (ballX < r) { ballX = r; ballVX = kotlin.math.abs(ballVX) }
+            if (ballX > w - r) { ballX = w - r; ballVX = -kotlin.math.abs(ballVX) }
+            ballSpin += ballVX * dt * .8f
+            fillPaint.color = 0xFFFF5A5A.toInt(); fillPaint.setShadowLayer(r * .5f, 0f, 0f, 0xFFFF5A5A.toInt())
+            c.drawCircle(ballX, ballY, r, fillPaint); fillPaint.clearShadowLayer()
+            linePaint.color = Color.WHITE; linePaint.strokeWidth = r * .18f
+            c.save(); c.rotate(ballSpin, ballX, ballY)
+            c.drawArc(RectF(ballX - r * .8f, ballY - r * .8f, ballX + r * .8f, ballY + r * .8f), 20f, 140f, false, linePaint)
+            c.restore()
+        }
+    }
+
+    private fun drawProp(c: Canvas, k: PropKind, s: Float, t: Float) {
+        val bites = propBites
+        when (k) {
+            PropKind.APPLE -> { fillPaint.color = 0xFFFF3B3B.toInt(); c.drawCircle(0f, -s * .45f, s * .5f, fillPaint); fillPaint.color = 0xFF3A7D2C.toInt(); c.drawOval(RectF(s * .02f, -s * 1.12f, s * .32f, -s * .9f), fillPaint) }
+            PropKind.ORANGE -> { fillPaint.color = 0xFFFF9A1F.toInt(); c.drawCircle(0f, -s * .45f, s * .5f, fillPaint) }
+            PropKind.BANANA -> { linePaint.color = 0xFFFFD23F.toInt(); linePaint.strokeWidth = s * .3f; c.drawArc(RectF(-s * .6f, -s * 1.3f, s * .6f, -s * .1f), 100f, 150f, false, linePaint) }
+            PropKind.PIZZA -> {
+                tmpPath.reset(); tmpPath.moveTo(-s * .5f, -s * 1.1f); tmpPath.lineTo(s * .5f, -s * 1.1f); tmpPath.lineTo(0f, 0f); tmpPath.close()
+                fillPaint.color = 0xFFFFC24D.toInt(); c.drawPath(tmpPath, fillPaint)
+                fillPaint.color = 0xFFD9381E.toInt(); c.drawCircle(-s * .12f, -s * .8f, s * .09f, fillPaint); c.drawCircle(s * .14f, -s * .6f, s * .08f, fillPaint)
+                fillPaint.color = 0xFFC98A3A.toInt(); c.drawRect(-s * .52f, -s * 1.18f, s * .52f, -s * 1.05f, fillPaint)
+            }
+            PropKind.DONUT -> { linePaint.color = 0xFFFF8FB8.toInt(); linePaint.strokeWidth = s * .3f; c.drawCircle(0f, -s * .5f, s * .34f, linePaint) }
+            PropKind.CAKE -> { fillPaint.color = 0xFFFF8FB8.toInt(); c.drawRect(-s * .45f, -s * .8f, s * .45f, -s * .05f, fillPaint); fillPaint.color = 0xFFFFF1E0.toInt(); c.drawRect(-s * .45f, -s * .9f, s * .45f, -s * .7f, fillPaint) }
+            PropKind.SANDWICH -> {
+                tmpPath.reset(); tmpPath.moveTo(-s * .55f, -s * .1f); tmpPath.lineTo(s * .55f, -s * .1f); tmpPath.lineTo(0f, -s * 1.0f); tmpPath.close()
+                fillPaint.color = 0xFFE8C07A.toInt(); c.drawPath(tmpPath, fillPaint)
+                fillPaint.color = 0xFF6BD16B.toInt(); c.drawRect(-s * .45f, -s * .3f, s * .45f, -s * .2f, fillPaint)
+            }
+            PropKind.CARROT -> {
+                tmpPath.reset(); tmpPath.moveTo(-s * .18f, -s * 1.1f); tmpPath.lineTo(s * .18f, -s * 1.1f); tmpPath.lineTo(0f, 0f); tmpPath.close()
+                fillPaint.color = 0xFFFF8C1A.toInt(); c.drawPath(tmpPath, fillPaint)
+                fillPaint.color = 0xFF3A7D2C.toInt(); c.drawOval(RectF(-s * .15f, -s * 1.35f, s * .15f, -s * 1.08f), fillPaint)
+            }
+            PropKind.BROCCOLI -> { fillPaint.color = 0xFF3FAE4A.toInt(); c.drawCircle(-s * .2f, -s * .75f, s * .25f, fillPaint); c.drawCircle(s * .2f, -s * .75f, s * .25f, fillPaint); c.drawCircle(0f, -s * .95f, s * .25f, fillPaint); c.drawRect(-s * .08f, -s * .6f, s * .08f, -s * .1f, fillPaint) }
+            PropKind.HOTDOG -> { fillPaint.color = 0xFFE8C07A.toInt(); c.drawRoundRect(RectF(-s * .6f, -s * .55f, s * .6f, -s * .15f), s * .2f, s * .2f, fillPaint); fillPaint.color = 0xFFC0392B.toInt(); c.drawRoundRect(RectF(-s * .7f, -s * .45f, s * .7f, -s * .28f), s * .1f, s * .1f, fillPaint) }
+            PropKind.FOOD -> { fillPaint.color = 0xFFF2F2F2.toInt(); c.drawOval(RectF(-s * .7f, -s * .35f, s * .7f, -s * .05f), fillPaint); fillPaint.color = 0xFFFFB35C.toInt(); c.drawCircle(0f, -s * .35f, s * .3f, fillPaint) }
+            PropKind.WATER -> {
+                // glass with water and a straw
+                fillPaint.color = 0x553FE3F2; c.drawRect(-s * .32f, -s * 1.1f, s * .32f, 0f, fillPaint)
+                fillPaint.color = 0xCC3FA9F5.toInt(); c.drawRect(-s * .3f, -s * (.75f - bites * .12f).coerceAtLeast(.1f), s * .3f, 0f, fillPaint)
+                linePaint.color = Color.WHITE; linePaint.strokeWidth = s * .05f
+                c.drawLine(-s * .32f, -s * 1.1f, -s * .32f, 0f, linePaint); c.drawLine(s * .32f, -s * 1.1f, s * .32f, 0f, linePaint)
+                linePaint.color = 0xFFFF5A8A.toInt(); linePaint.strokeWidth = s * .07f
+                c.drawLine(s * .1f, -s * .3f, -s * .2f, -s * 1.45f, linePaint)
+            }
+            PropKind.BEER -> {
+                // mug with foam and a handle
+                fillPaint.color = 0xFFFFB21F.toInt(); c.drawRoundRect(RectF(-s * .38f, -s * 1.0f, s * .38f, 0f), s * .08f, s * .08f, fillPaint)
+                fillPaint.color = Color.WHITE
+                for (i in -1..1) c.drawCircle(i * s * .24f, -s * 1.0f + kotlin.math.sin(t * 3f + i) * s * .02f, s * .2f, fillPaint)
+                linePaint.color = 0xFFFFE0A0.toInt(); linePaint.strokeWidth = s * .1f
+                c.drawArc(RectF(s * .25f, -s * .8f, s * .7f, -s * .25f), -90f, 180f, false, linePaint)
+                fillPaint.color = 0x88FFFFFF.toInt(); c.drawRect(-s * .25f, -s * .85f, -s * .15f, -s * .15f, fillPaint)
+            }
+            PropKind.FLOWERS -> {
+                linePaint.color = 0xFF3FAE4A.toInt(); linePaint.strokeWidth = s * .06f
+                val heads = listOf(-.35f to -1.2f, 0f to -1.4f, .35f to -1.2f, -.15f to -1.0f, .18f to -1.0f)
+                for ((fx, fy) in heads) c.drawLine(0f, 0f, fx * s, fy * s, linePaint)
+                val cols = intArrayOf(0xFFFF4F8B.toInt(), 0xFFFF6B6B.toInt(), 0xFFFFD23F.toInt(), 0xFFB061FF.toInt(), 0xFFFF8FB8.toInt())
+                heads.forEachIndexed { i, (fx, fy) ->
+                    fillPaint.color = cols[i % cols.size]
+                    for (pp in 0 until 5) {
+                        val a = pp * 2 * PI.toFloat() / 5 + t * .5f
+                        c.drawCircle(fx * s + kotlin.math.cos(a) * s * .1f, fy * s + kotlin.math.sin(a) * s * .1f, s * .09f, fillPaint)
+                    }
+                    fillPaint.color = 0xFFFFF1A0.toInt(); c.drawCircle(fx * s, fy * s, s * .06f, fillPaint)
+                }
+                fillPaint.color = 0xFFFF4F8B.toInt()
+                tmpPath.reset(); tmpPath.moveTo(-s * .25f, -s * .25f); tmpPath.lineTo(s * .25f, -s * .25f); tmpPath.lineTo(s * .12f, s * .1f); tmpPath.lineTo(-s * .12f, s * .1f); tmpPath.close()
+                c.drawPath(tmpPath, fillPaint)
+            }
+            PropKind.NONE -> {}
+        }
+        // bites: black semicircles nibbled from the top-right
+        if (bites > 0 && k != PropKind.WATER && k != PropKind.BEER && k != PropKind.FLOWERS) {
+            fillPaint.color = Color.BLACK
+            for (i in 0 until bites.coerceAtMost(4)) c.drawCircle(s * (.35f - i * .22f), -s * (1.0f - i * .1f), s * .22f, fillPaint)
+        }
+    }
+
+    private fun drawCrack(c: Canvas, w: Float, h: Float, base: Float, now: Long) {
+        val x = crackX * w; val y = crackY * h
+        val p = ((now - crackStart) / 250f).coerceIn(0f, 1f)
+        linePaint.color = Color.argb(230, 235, 245, 255); linePaint.strokeWidth = 3.5f; linePaint.clearShadowLayer()
+        val rnd = java.util.Random(7)
+        for (i in 0 until 14) {
+            val a = i * 2 * PI.toFloat() / 14 + rnd.nextFloat() * .3f
+            var px = x; var py = y
+            val len = (w * (.25f + rnd.nextFloat() * .5f)) * p
+            var d = 0f
+            tmpPath.reset(); tmpPath.moveTo(px, py)
+            while (d < len) {
+                val seg = 18f + rnd.nextFloat() * 40f
+                val aa = a + (rnd.nextFloat() - .5f) * .7f
+                px += kotlin.math.cos(aa) * seg; py += kotlin.math.sin(aa) * seg; d += seg
+                tmpPath.lineTo(px, py)
+            }
+            c.drawPath(tmpPath, linePaint)
+        }
+        linePaint.strokeWidth = 2.5f
+        for (ring in 1..3) {
+            tmpPath.reset()
+            val r = base * .25f * ring * p
+            for (i in 0..14) {
+                val a = i * 2 * PI.toFloat() / 14
+                val rr = r * (.85f + rnd.nextFloat() * .3f)
+                val px = x + kotlin.math.cos(a) * rr; val py = y + kotlin.math.sin(a) * rr
+                if (i == 0) tmpPath.moveTo(px, py) else tmpPath.lineTo(px, py)
+            }
+            c.drawPath(tmpPath, linePaint)
+        }
+        fillPaint.color = Color.argb(200, 255, 255, 255)
+        c.drawCircle(x, y, base * .06f, fillPaint)
+    }
+
 }

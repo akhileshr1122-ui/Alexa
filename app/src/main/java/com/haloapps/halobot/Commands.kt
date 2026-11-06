@@ -76,6 +76,57 @@ fun handleCommand(r: Robot, raw: String): Boolean {
     if (t.has("spin test", "movement test", "motion test", "vibration test")) { r.done(); r.spinTest(); return true }
     if (t.has("mic test", "microphone test", "hearing test")) { r.done(); r.micTest(); return true }
 
+    // ---- kid behaviours ----
+    if (t.has("act like a kid", "be a kid", "kid mode")) { r.prefs.kidMode = true; r.prefs.pitch = 1.85f; r.voice.applyVoice(); say("Yay! I'm a little kid again! Hehe!", "joy"); return true }
+    if (t.has("act like a grown", "grown up mode", "stop being a kid", "act normal")) { r.prefs.kidMode = false; r.prefs.pitch = 1.5f; r.voice.applyVoice(); say("Alright, grown-up mode on.", "cool"); return true }
+    if (t.has("drinking water", "drink water", "water break", "have some water")) { r.done(); r.kid.drink(); return true }
+    if (t.has("cheers", "let's drink", "lets drink", "i'm drinking", "drinking beer", "drinking wine", "have a drink", "bottoms up")) { r.done(); r.kid.cheers(fromGlass = false); return true }
+    if (t.has("eat this", "have some food", "want some food", "want to eat", "time to eat", "i'm eating", "lunch time", "dinner time")) { r.done(); r.kid.eat("food"); return true }
+    if (Regex("going to (take a |have a )?(bath|shower)|going to bathe|take a (bath|shower)|bath time|shower time").containsMatchIn(t)) { r.done(); r.kid.goingAway("bath"); return true }
+    if (Regex("\\b(i'm going out|i am going out|going to work|be right back|brb|i'll be back|i will be back|going to the store|i'm leaving|i am leaving|goodbye|bye bye|see you later)\\b").containsMatchIn(t)) { r.done(); r.kid.goingAway("out"); return true }
+    if (t.has("play dead", "die for me", "bang bang", "you're dead", "you are dead")) { r.done(); r.kid.die(); return true }
+    if (Regex("play (with )?(the |a |your )?ball").containsMatchIn(t)) { r.face.startBall(); r.kid.sfx.play("chirp"); say("Wheee! Ball time!", "excited"); return true }
+    if (t.has("headphones")) { r.face.headphones = !t.has("off", "take off", "remove"); say(if (r.face.headphones) "Ooh, my blue headphones!" else "Headphones off.", "cool"); return true }
+    if (t.has("spotify") && !t.has(" tv")) { r.done(); r.kid.spotify(); return true }
+    if (t.has("romance", "be romantic", "romantic mode")) {
+        val partner = r.kid.vision2.peopleList.firstOrNull { it.second == "partner" }?.first ?: r.kid.lastPerson ?: "my love"
+        r.done(); r.kid.romance(partner); return true
+    }
+
+    // ---- people the robot knows ----
+    Regex("(?:this is|meet|say hi to|say hello to) my (wife|girlfriend|partner|husband|boyfriend|fiance|fiancee|love)(?: ([a-z]+))?").find(t)?.let { m ->
+        val given = m.groupValues[2].takeIf { it.isNotBlank() && it != "she" && it != "he" }
+        if (given != null) { r.done(); r.kid.enroll(given.replaceFirstChar { c -> c.uppercase() }, "partner") }
+        else r.ask("Ooh! What's ${if (m.groupValues[1] in listOf("husband", "boyfriend")) "his" else "her"} name?") { ans ->
+            val n = Regex("([a-z]+)$").find(ans.trim())?.groupValues?.get(1)
+            if (n == null) { r.say("I didn't catch the name.", "confused") { r.done() }; return@ask }
+            r.done(); r.kid.enroll(n.replaceFirstChar { c -> c.uppercase() }, "partner")
+        }
+        return true
+    }
+    Regex("(?:remember (?:him|her|them|this person) as|this is my friend|meet my friend|this is my (?:mom|dad|mother|father|brother|sister|son|daughter|friend)) ?([a-z]+)?").find(t)?.let { m ->
+        val n = m.groupValues[1].takeIf { it.isNotBlank() }
+        if (n != null) { r.done(); r.kid.enroll(n.replaceFirstChar { c -> c.uppercase() }, "friend"); return true }
+    }
+    if (t.has("remember my face", "learn my face", "remember me")) {
+        if (r.userName.isBlank()) { r.say("Tell me your name first! Say, my name is...", "curious") { r.done() }; return true }
+        r.done(); r.kid.enroll(r.userName, "me"); return true
+    }
+    Regex("forget (?:the face of |about )?([a-z]+)(?:'s face)?").find(t)?.let { m ->
+        val n = m.groupValues[1]
+        if (n !in listOf("it", "that", "this", "everything")) {
+            say(if (r.kid.vision2.forget(n)) "Okay, I forgot $n's face." else "I don't know anyone called $n.", "neutral"); return true
+        }
+    }
+    if (t.has("who is this", "who do you see", "who am i", "do you know me", "who's this")) {
+        val p = r.kid.lastPerson
+        if (p != null) say("That's $p! I know you!", "happy") else say("Hmm, I don't recognise this face yet. Say, remember my face!", "curious")
+        return true
+    }
+
+    // ---- TV remote (Samsung, Fire TV, Google TV, LG, Roku over Wi-Fi) ----
+    if (handleTv(r, t)) return true
+
     // ---- stop / quiet ----
     if (t == "stop" || t.has("stop it", "stop that", "stop dancing", "stop the alarm", "turn off the alarm", "be quiet", "shut up", "shh", "silence")) {
         r.voice.stopSpeaking(); r.motion.stop()
@@ -471,4 +522,63 @@ private fun guessMood(r: Robot) {
             }
         }, 1800)
     }
+}
+
+
+// ---------------- TV ----------------
+private val TV_APPS = listOf(
+    "netflix", "prime video", "prime", "amazon prime", "youtube", "disney", "disney plus", "hulu", "crave", "plex", "hotstar", "jio hotstar",
+    "zee5", "sonyliv", "sony liv", "aha", "sun nxt", "apple tv", "twitch", "tubi", "pluto", "max", "hbo", "paramount", "peacock", "kodi", "spotify on tv",
+)
+
+private fun handleTv(r: Robot, t: String): Boolean {
+    val k = com.halo.remote.core.Key.values()
+    fun key(name: String) = k.first { it.name == name }
+    val mentionsTv = t.contains(" tv") || t.startsWith("tv") || t.contains("television")
+    val bareApp = TV_APPS.firstOrNull { t == it || t == "$it please" }
+    val launchMatch = Regex("^(?:go to|open|launch|start|put on|switch to|play)\\s+(.+?)(?:\\s+on (?:the )?tv)?$").find(t)
+    val isTvCmd = mentionsTv || bareApp != null ||
+        Regex("^(volume up|volume down|turn (it )?up the volume|mute|unmute|go home|home|go back|back|channel up|channel down|ok|select|enter|up|down|left|right|pause|resume)( \\d+| please)?$").containsMatchIn(t) ||
+        (launchMatch != null && TV_APPS.any { launchMatch.groupValues[1].startsWith(it) || it.startsWith(launchMatch.groupValues[1]) })
+    if (!isTvCmd) return false
+    val tv = r.tv
+    if (!tv.hasTv) {
+        r.say("I'm not connected to a TV yet. Long press me, open settings, and tap Find TVs.", "curious") { r.done() }
+        return true
+    }
+    val times = Regex("(\\d+)").find(t)?.groupValues?.get(1)?.toIntOrNull()?.coerceIn(1, 20)
+    fun ok(face: String = "proud", line: String? = null) {
+        r.express(face, 1200); r.kid.sfx.play("boop")
+        if (line != null) r.say(line, face) { r.done() } else r.done()
+    }
+    when {
+        Regex("turn (on|off) (the )?(tv|television)|(tv|television) (on|off)|switch (on|off) (the )?tv").containsMatchIn(t) -> {
+            if (t.contains("off")) { tv.powerOff(); ok("sleepy", "Turning off the TV. Night night, TV!") }
+            else { tv.powerOn(); ok("excited", "Waking up the TV!") }
+        }
+        t.has("volume up", "turn up the volume", "turn it up", "louder") -> { tv.pressMany(key("VOL_UP"), times ?: 3); ok("excited") }
+        t.has("volume down", "turn down the volume", "turn it down", "quieter", "softer") -> { tv.pressMany(key("VOL_DOWN"), times ?: 3); ok("shy") }
+        t.has("mute", "unmute") -> { tv.press(key("MUTE")); ok("shy") }
+        t.has("go home", "home screen") || t == "home" || t == "tv home" -> { tv.press(key("HOME")); ok() }
+        t.has("go back") || t == "back" -> { tv.press(key("BACK")); ok() }
+        t.has("channel up", "next channel") -> { tv.press(key("CH_UP")); ok() }
+        t.has("channel down", "previous channel") -> { tv.press(key("CH_DOWN")); ok() }
+        t.has("pause", "resume") || t == "play on tv" -> { tv.press(key("PLAY_PAUSE")); ok("cool") }
+        t.startsWith("ok") || t.startsWith("select") || t.startsWith("enter") -> { tv.press(key("OK")); ok() }
+        t.startsWith("up") -> { tv.pressMany(key("UP"), times ?: 1); ok() }
+        t.startsWith("down") -> { tv.pressMany(key("DOWN"), times ?: 1); ok() }
+        t.startsWith("left") -> { tv.pressMany(key("LEFT"), times ?: 1); ok() }
+        t.startsWith("right") -> { tv.pressMany(key("RIGHT"), times ?: 1); ok() }
+        else -> {
+            val raw = launchMatch?.groupValues?.get(1) ?: bareApp ?: t.replace(Regex("(on |the )?(tv|television)"), "").trim()
+            val app = raw.removeSuffix(" please").removePrefix("the ").replace("amazon prime", "prime video").trim()
+            if (app.isBlank()) { r.say("What should I open on the TV?", "curious") { r.done() }; return true }
+            r.express("thinking", 3000)
+            tv.launch(app) { label ->
+                if (label != null) { r.face.showBanner("\uD83D\uDCFA ${label.replaceFirstChar { c -> c.uppercase() }}", 3000); ok("excited", "Opening $label on the TV!") }
+                else r.say("I couldn't find $app on the TV.", "confused") { r.done() }
+            }
+        }
+    }
+    return true
 }

@@ -58,6 +58,8 @@ class Vision(
     )
     private var capture: ImageCapture? = null
     var running = false; private set
+    /** Called on the camera thread with each frame before face detection (for the extra vision models). */
+    @Volatile var frameHook: ((ImageProxy) -> Unit)? = null
     @Volatile var paused = false
 
     fun start() {
@@ -101,6 +103,7 @@ class Vision(
         val rot = proxy.imageInfo.rotationDegrees
         val w = (if (rot % 180 == 0) proxy.width else proxy.height).toFloat()
         val h = (if (rot % 180 == 0) proxy.height else proxy.width).toFloat()
+        try { frameHook?.invoke(proxy) } catch (_: Exception) {}
         val img = InputImage.fromMediaImage(media, rot)
         detector.process(img)
             .addOnSuccessListener { faces ->

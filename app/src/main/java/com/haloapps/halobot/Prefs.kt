@@ -23,8 +23,8 @@ class Prefs(ctx: Context) {
     var birthday: String get() = str("birthday", ""); set(v) = putStr("birthday", v)
     var city: String get() = str("city", ""); set(v) = putStr("city", v)
     var theme: Int get() = int("theme", 0); set(v) = putInt("theme", v)
-    var pitch: Float get() = float("pitch", 1.6f); set(v) = putFloat("pitch", v)
-    var rate: Float get() = float("rate", 1.05f); set(v) = putFloat("rate", v)
+    var pitch: Float get() = float("pitch", 1.85f); set(v) = putFloat("pitch", v)
+    var rate: Float get() = float("rate", 1.08f); set(v) = putFloat("rate", v)
 
     var move: Boolean get() = bool("move", true); set(v) = putBool("move", v)
     var seek: Boolean get() = bool("seek", true); set(v) = putBool("seek", v)
@@ -40,6 +40,18 @@ class Prefs(ctx: Context) {
 
     var apiKey: String get() = str("apiKey", ""); set(v) = putStr("apiKey", v.trim())
     var aiModel: String get() = str("aiModel", "claude-haiku-5-5"); set(v) = putStr("aiModel", v.trim())
+
+    var geminiKey: String get() = str("geminiKey", ""); set(v) = putStr("geminiKey", v.trim())
+    var geminiModel: String get() = str("geminiModel", "gemini-3.8-flash"); set(v) = putStr("geminiModel", v.trim())
+    var groqKey: String get() = str("groqKey", ""); set(v) = putStr("groqKey", v.trim())
+    var groqModel: String get() = str("groqModel", "llama-3.3-70b-versatile"); set(v) = putStr("groqModel", v.trim())
+
+    var kidMode: Boolean get() = bool("kidMode", true); set(v) = putBool("kidMode", v)
+    var sounds: Boolean get() = bool("sounds", true); set(v) = putBool("sounds", v)
+    var seeThings: Boolean get() = bool("seeThings", true); set(v) = putBool("seeThings", v)
+    var weatherAmbient: Boolean get() = bool("weatherAmbient", true); set(v) = putBool("weatherAmbient", v)
+    var idlePlay: Boolean get() = bool("idlePlay", true); set(v) = putBool("idlePlay", v)
+    var romance: Boolean get() = bool("romance", true); set(v) = putBool("romance", v)
 
     // stats & memory
     var firstDay: Long get() = long("firstDay", 0L); set(v) = putLong("firstDay", v)

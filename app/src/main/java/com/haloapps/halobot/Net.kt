@@ -58,65 +58,118 @@ object Weather {
     }
 }
 
-/** Optional cloud brain: Claude API, used for open-ended chat when the user adds a key. */
+/**
+ * Optional cloud brain with fallbacks: Claude -> Gemini -> Groq (whichever have keys).
+ * Used for open-ended chat; the robot works offline without any of them.
+ */
 class AiChat(private val prefs: Prefs) {
-    private val history = ArrayList<Pair<String, String>>()
-    val enabled: Boolean get() = prefs.apiKey.isNotBlank()
+    private val history = ArrayList<Pair<String, String>>() // role: "user" / "assistant"
+    val enabled: Boolean get() = prefs.apiKey.isNotBlank() || prefs.geminiKey.isNotBlank() || prefs.groqKey.isNotBlank()
     @Volatile var lastError = ""
+    @Volatile var lastProvider = ""
 
     fun ask(text: String, robotName: String, userName: String, cb: (String?) -> Unit) {
         thread {
             lastError = ""
-            val reply = try { call(text, robotName, userName) } catch (e: Exception) { lastError = e.javaClass.simpleName + ": " + (e.message ?: ""); null }
+            val reply = synchronized(this) { askChain(text, robotName, userName) }
             mainHandler.post { cb(reply) }
         }
     }
 
-    @Synchronized
-    private fun call(text: String, robotName: String, userName: String): String? {
+    private fun system(robotName: String, userName: String): String {
+        val who = if (userName.isBlank()) "your human friend" else userName
+        val persona = if (prefs.kidMode)
+            "You are $robotName, a tiny cute robot who acts like a cheerful, curious 5-year-old kid. You live inside a phone, see $who through the camera, make faces and wiggle with vibration. " +
+            "Talk like a sweet little kid: short simple words, excited, silly, says things like yay, hehe, pwease, and asks lots of questions. Keep it kind and wholesome."
+        else
+            "You are $robotName, a tiny expressive desk robot pet that lives inside a phone. You can see $who through the camera, make faces, and wiggle using vibration. You are playful, curious, kind and a little cheeky."
+        return "$persona Reply in one or two short spoken sentences, no emojis, no markdown, no lists. " +
+            "Begin every reply with exactly one emotion tag from: [happy] [joy] [laugh] [excited] [love] [surprised] [sad] [angry] " +
+            "[curious] [confused] [shy] [thinking] [proud] [cool] [sleepy] [scared] [smug] [wink] [pout]."
+    }
+
+    private fun askChain(text: String, robotName: String, userName: String): String? {
         history.add("user" to text)
         while (history.size > 16) history.removeAt(0)
         while (history.isNotEmpty() && history[0].first != "user") history.removeAt(0)
-        val msgs = JSONArray()
-        for ((role, content) in history) msgs.put(JSONObject().put("role", role).put("content", content))
-        val who = if (userName.isBlank()) "your human friend" else userName
-        val system = "You are $robotName, a tiny expressive desk robot pet that lives inside a phone. You can see $who through the camera, " +
-            "make faces, and wiggle using vibration. You are playful, curious, kind and a little cheeky, like a cute pet. " +
-            "Reply in one or two short spoken sentences, no emojis, no markdown, no lists. " +
-            "Begin every reply with exactly one emotion tag from: [happy] [joy] [laugh] [excited] [love] [surprised] [sad] [angry] " +
-            "[curious] [confused] [shy] [thinking] [proud] [cool] [sleepy] [scared] [smug] [wink]."
-        val body = JSONObject()
-            .put("model", prefs.aiModel.ifBlank { "claude-haiku-5-5" })
-            .put("max_tokens", 300)
-            .put("system", system)
-            .put("messages", msgs)
-        val c = URL("https://api.anthropic.com/v1/messages").openConnection() as HttpURLConnection
+        val sys = system(robotName, userName)
+        val errors = ArrayList<String>()
+        val providers = listOf(
+            Triple("Claude", prefs.apiKey) { claude(sys) },
+            Triple("Gemini", prefs.geminiKey) { gemini(sys) },
+            Triple("Groq", prefs.groqKey) { groq(sys) },
+        )
+        for ((name, key, call) in providers) {
+            if (key.isBlank()) continue
+            if (name == "Claude" && key.startsWith("sk-ant-oat")) { errors.add("Claude: login token, not an API key"); continue }
+            try {
+                val out = call()?.trim()
+                if (!out.isNullOrEmpty()) {
+                    history.add("assistant" to out)
+                    lastProvider = name
+                    return out
+                }
+                errors.add("$name: empty reply")
+            } catch (e: Exception) {
+                errors.add("$name: ${e.message ?: e.javaClass.simpleName}")
+            }
+        }
+        history.removeAt(history.size - 1)
+        lastError = errors.joinToString(" | ")
+        return null
+    }
+
+    private fun post(url: String, headers: Map<String, String>, body: JSONObject): JSONObject {
+        val c = URL(url).openConnection() as HttpURLConnection
         try {
             c.requestMethod = "POST"
             c.connectTimeout = 10000; c.readTimeout = 25000
             c.doOutput = true
             c.setRequestProperty("content-type", "application/json")
-            c.setRequestProperty("x-api-key", prefs.apiKey)
-            c.setRequestProperty("anthropic-version", "2023-06-01")
+            for ((k, v) in headers) c.setRequestProperty(k, v)
             c.outputStream.use { it.write(body.toString().toByteArray()) }
             val code = c.responseCode
             if (code !in 200..299) {
-                val err = try { c.errorStream?.bufferedReader()?.readText()?.take(160) } catch (_: Exception) { null }
-                lastError = "HTTP $code ${err ?: ""}".trim()
-                history.removeAt(history.size - 1); return null
+                val err = try { c.errorStream?.bufferedReader()?.readText()?.take(140) } catch (_: Exception) { null }
+                throw Exception("HTTP $code ${err ?: ""}".trim())
             }
-            val resp = JSONObject(c.inputStream.bufferedReader().readText())
-            val arr = resp.getJSONArray("content")
-            val sb = StringBuilder()
-            for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                if (o.optString("type") == "text") sb.append(o.optString("text"))
-            }
-            val out = sb.toString().trim()
-            if (out.isEmpty()) { history.removeAt(history.size - 1); return null }
-            history.add("assistant" to out)
-            return out
+            return JSONObject(c.inputStream.bufferedReader().readText())
         } finally { c.disconnect() }
+    }
+
+    private fun claude(sys: String): String? {
+        val msgs = JSONArray()
+        for ((role, content) in history) msgs.put(JSONObject().put("role", role).put("content", content))
+        val body = JSONObject().put("model", prefs.aiModel.ifBlank { "claude-haiku-5-5" }).put("max_tokens", 300).put("system", sys).put("messages", msgs)
+        val resp = post("https://api.anthropic.com/v1/messages", mapOf("x-api-key" to prefs.apiKey, "anthropic-version" to "2023-06-01"), body)
+        val arr = resp.getJSONArray("content")
+        val sb = StringBuilder()
+        for (i in 0 until arr.length()) { val o = arr.getJSONObject(i); if (o.optString("type") == "text") sb.append(o.optString("text")) }
+        return sb.toString()
+    }
+
+    private fun gemini(sys: String): String? {
+        val contents = JSONArray()
+        for ((role, content) in history) contents.put(JSONObject().put("role", if (role == "assistant") "model" else "user")
+            .put("parts", JSONArray().put(JSONObject().put("text", content))))
+        val body = JSONObject()
+            .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sys))))
+            .put("contents", contents)
+            .put("generationConfig", JSONObject().put("maxOutputTokens", 1024))
+        val model = prefs.geminiModel.ifBlank { "gemini-3.8-flash" }
+        val resp = post("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent", mapOf("x-goog-api-key" to prefs.geminiKey), body)
+        val parts = resp.optJSONArray("candidates")?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts") ?: return null
+        val sb = StringBuilder()
+        for (i in 0 until parts.length()) { val o = parts.getJSONObject(i); if (!o.optBoolean("thought", false)) sb.append(o.optString("text")) }
+        return sb.toString()
+    }
+
+    private fun groq(sys: String): String? {
+        val msgs = JSONArray().put(JSONObject().put("role", "system").put("content", sys))
+        for ((role, content) in history) msgs.put(JSONObject().put("role", role).put("content", content))
+        val body = JSONObject().put("model", prefs.groqModel.ifBlank { "llama-3.3-70b-versatile" }).put("max_tokens", 300).put("messages", msgs)
+        val resp = post("https://api.groq.com/openai/v1/chat/completions", mapOf("Authorization" to "Bearer ${prefs.groqKey}"), body)
+        return resp.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
     }
 
     fun reset() { synchronized(this) { history.clear() } }

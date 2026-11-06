@@ -25,6 +25,7 @@ class SettingsActivity : ComponentActivity() {
     private lateinit var prefs: Prefs
     private var tts: TextToSpeech? = null
     private val saves = ArrayList<() -> Unit>()
+    private val tvHubs = ArrayList<TvHub>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -98,6 +99,79 @@ class SettingsActivity : ComponentActivity() {
         toggle("Show captions", prefs.captions) { prefs.captions = it }
         toggle("Show a dim clock while sleeping at night", prefs.nightClock) { prefs.nightClock = it }
 
+        header("Personality")
+        toggle("Kid mode (acts like a cute little kid)", prefs.kidMode) { prefs.kidMode = it }
+        toggle("Cute sound effects", prefs.sounds) { prefs.sounds = it }
+        toggle("Notice food, drinks & glasses (eats, drinks, cheers)", prefs.seeThings) { prefs.seeThings = it }
+        toggle("Show the weather outside on screen (rain / snow)", prefs.weatherAmbient) { prefs.weatherAmbient = it }
+        toggle("Play with a ball / wear headphones when bored", prefs.idlePlay) { prefs.idlePlay = it }
+        toggle("Romance mode for your partner (flowers, top hat)", prefs.romance) { prefs.romance = it }
+
+        header("People it knows")
+        note("Teach faces by voice: double-tap, then say \"remember my face\", \"this is my wife Ashritha\", or \"remember her as Priya\". Faces are stored only on this phone.")
+        val peopleBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(peopleBox)
+        fun refreshPeople() {
+            peopleBox.removeAllViews()
+            val sp = getSharedPreferences("halobot_people", MODE_PRIVATE)
+            val arr = try { org.json.JSONArray(sp.getString("list", "[]")) } catch (_: Exception) { org.json.JSONArray() }
+            if (arr.length() == 0) peopleBox.addView(TextView(this).apply { text = "Nobody yet."; setTextColor(0xFF8A99A8.toInt()) })
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                row.addView(TextView(this).apply {
+                    text = "${o.getString("n")} (${o.optString("r", "friend").let { if (it == "me") "you" else it }})"
+                    setTextColor(Color.WHITE); textSize = 15f
+                }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                row.addView(Button(this).apply {
+                    text = "Forget"
+                    setOnClickListener {
+                        val keep = org.json.JSONArray()
+                        for (j in 0 until arr.length()) if (j != i) keep.put(arr.getJSONObject(j))
+                        sp.edit().putString("list", keep.toString()).apply()
+                        refreshPeople()
+                    }
+                })
+                peopleBox.addView(row)
+            }
+        }
+        refreshPeople()
+
+        header("TV remote")
+        note("Control your Samsung TV, Fire TV, Google TV, LG or Roku over Wi-Fi by voice: \"volume up\", \"go home\", \"go back\", \"Netflix\", \"open Prime Video\", \"turn off the TV\". Samsung: accept the Allow prompt on the TV. Fire TV: turn on Settings → My Fire TV → Developer options → ADB debugging.")
+        val tvHub = TvHub(this).also { tvHubs.add(it) }
+        val tvStatus = TextView(this).apply { setTextColor(0xFF3FE3F2.toInt()); textSize = 14f; text = tvHub.device?.let { "Using: ${it.name} (${it.platform.short}) at ${it.host}" } ?: "No TV chosen yet." }
+        col.addView(tvStatus)
+        tvHub.onState = { st ->
+            tvStatus.text = when (st) {
+                is com.halo.remote.core.ConnState.Connected -> "Connected to ${tvHub.device?.name} ✓"
+                is com.halo.remote.core.ConnState.Connecting -> "Connecting…"
+                is com.halo.remote.core.ConnState.WaitingForApproval -> st.message
+                is com.halo.remote.core.ConnState.Failed -> st.message
+                is com.halo.remote.core.ConnState.NeedsCode -> "This TV needs pairing in the OneBeam app first."
+                else -> tvStatus.text
+            }
+        }
+        col.addView(Button(this).apply {
+            text = "Find TVs on my Wi-Fi"
+            setOnClickListener {
+                val found = ArrayList<com.halo.remote.core.TvDevice>()
+                tvStatus.text = "Searching… (about 8 seconds)"
+                tvHub.discover({ d -> if (found.none { it.id == d.id }) found.add(d) else { found.removeAll { it.id == d.id }; found.add(d) } }) { err ->
+                    if (err != null) { tvStatus.text = err; return@discover }
+                    if (found.isEmpty()) { tvStatus.text = "No TVs found. Make sure the TV is on and on the same Wi-Fi."; return@discover }
+                    tvStatus.text = "Found ${found.size}. Pick one."
+                    android.app.AlertDialog.Builder(this@SettingsActivity)
+                        .setTitle("Choose your TV")
+                        .setItems(found.map { "${it.name} — ${it.platform.short} (${it.host})" }.toTypedArray()) { _, which ->
+                            val d = found[which]
+                            tvHub.use(d); tvHub.connect()
+                            tvStatus.text = "Connecting to ${d.name}…"
+                        }.show()
+                }
+            }
+        })
+
         header("Behaviour")
         toggle("Move with vibration", prefs.move) { prefs.move = it }
         toggle("Turn toward me / search for me with vibration", prefs.seek) { prefs.seek = it }
@@ -141,7 +215,12 @@ class SettingsActivity : ComponentActivity() {
             setTextColor(0xFFFF7A7A.toInt()); textSize = 13f; setPadding(0, (6 * d).toInt(), 0, (6 * d).toInt())
         })
         field("Claude API key (starts with sk-ant-api)", prefs.apiKey, "sk-ant-api03-...", password = true) { prefs.apiKey = it }
-        field("Model", prefs.aiModel, "claude-haiku-5-5") { prefs.aiModel = it.ifBlank { "claude-haiku-5-5" } }
+        field("Claude model", prefs.aiModel, "claude-haiku-5-5") { prefs.aiModel = it.ifBlank { "claude-haiku-5-5" } }
+        note("Fallbacks, tried in order if the one before fails or has no key:")
+        field("Gemini API key (aistudio.google.com)", prefs.geminiKey, "AIza...", password = true) { prefs.geminiKey = it }
+        field("Gemini model", prefs.geminiModel, "gemini-3.8-flash") { prefs.geminiModel = it.ifBlank { "gemini-3.8-flash" } }
+        field("Groq API key (console.groq.com)", prefs.groqKey, "gsk_...", password = true) { prefs.groqKey = it }
+        field("Groq model", prefs.groqModel, "llama-3.3-70b-versatile") { prefs.groqModel = it.ifBlank { "llama-3.3-70b-versatile" } }
 
         header("Stats")
         val days = if (prefs.firstDay == 0L) 1 else ((System.currentTimeMillis() - prefs.firstDay) / 86_400_000L) + 1
@@ -165,6 +244,9 @@ class SettingsActivity : ComponentActivity() {
             "• my name is ... · your name is ... · my birthday is April 21 · my favorite food is ...\n" +
             "• change your eye color to pink · be quiet · stop\n" +
             "• mic test · spin test · play your beat\n" +
+            "• cheers · drink water · eat this · I'm going to take a bath · I'm going out · play dead · play ball · headphones · spotify\n" +
+            "• remember my face · this is my wife ... · remember her as ... · who is this · romance mode · act like a kid / grown up\n" +
+            "• TV: volume up 5 · mute · go home · go back · Netflix · open Prime Video · turn off the TV · turn on the TV · pause\n" +
             "Physical: pet it, poke it, pick it up, shake it, turn it face down, wave over the top sensor, cover it in the dark, plug in the charger, play music nearby."
         )
     }
@@ -183,6 +265,7 @@ class SettingsActivity : ComponentActivity() {
 
     override fun onDestroy() {
         tts?.shutdown()
+        tvHubs.forEach { it.close() }
         super.onDestroy()
     }
 }

@@ -16,7 +16,7 @@ import kotlin.random.Random
  */
 class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : Senses.Listener {
 
-    enum class Mode { NONE, DANCE, STARE, HIDE_COUNT, HIDE_SEEK, SEEK, BREATHE, CLOCK, PHOTO, BIRTHDAY, GALLERY, ALARM, SLEEP_CLOCK }
+    enum class Mode { NONE, DEAD, ROMANCE, DANCE, STARE, HIDE_COUNT, HIDE_SEEK, SEEK, BREATHE, CLOCK, PHOTO, BIRTHDAY, GALLERY, ALARM, SLEEP_CLOCK }
 
     val prefs = Prefs(act)
     val main = Handler(Looper.getMainLooper())
@@ -26,6 +26,8 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
     val vision = Vision(act, preview) { onSeen(it) }
     val ai = AiChat(prefs)
     val box = MusicBox()
+    val tv = TvHub(act)
+    val kid = Kid(this)
 
     var mode = Mode.NONE
     private var modeStart = 0L
@@ -113,6 +115,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
         if (!started) {
             started = true
             main.post(tickRunnable)
+            kid.start()
             face.setBase("closed")
             main.postDelayed({
                 face.setBase("neutral"); face.show("surprised", 900); motion.play("hop"); face.hop()
@@ -129,7 +132,16 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
         resume()
     }
 
+    fun startModePublic(m: Mode): Int = startMode(m)
+    fun alivePublic(token: Int): Boolean = alive(token)
+    fun mediaKeyPlay() {
+        val am = act.getSystemService(android.media.AudioManager::class.java) ?: return
+        am.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, android.view.KeyEvent.KEYCODE_MEDIA_PLAY))
+        am.dispatchMediaKeyEvent(android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, android.view.KeyEvent.KEYCODE_MEDIA_PLAY))
+    }
+
     fun applyPrefs() {
+        kid.applyPrefs()
         face.theme = Themes.get(prefs.theme)
         face.scanlines = prefs.scanlines
         motion.enabled = prefs.move
@@ -144,6 +156,8 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
         if (hasCamera) vision.start()
         vision.paused = false
         if (started) runPendingTest()
+        tv.close()
+        kid.vision2.reload()
     }
 
     fun pause() {
@@ -157,13 +171,15 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
     fun destroy() {
         main.removeCallbacks(tickRunnable)
         box.stop()
+        kid.close()
+        tv.close()
         voice.shutdown()
         vision.close()
         tone?.release()
     }
 
     // ---------------- helpers ----------------
-    fun express(name: String, ms: Long = 2500) = face.show(name, ms)
+    fun express(name: String, ms: Long = 2500) { face.show(name, ms); kid.soundFor(name) }
 
     fun say(text: String, expr: String? = null, exprMs: Long = 0, then: (() -> Unit)? = null) {
         if (expr != null) face.show(expr, if (exprMs > 0) exprMs else (1500L + text.length * 60L))
@@ -206,6 +222,8 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
         if (mode == Mode.BIRTHDAY) face.clearScene()
         if (mode == Mode.ALARM) motion.stop()
         if (mode == Mode.DANCE) box.stop()
+        if (mode == Mode.DEAD) { face.clearCrack(); face.dimTarget = 0f }
+        if (mode == Mode.ROMANCE) { face.gentleman = false; face.prop = FaceView.PropKind.NONE; face.propRaise = 0f; face.clearScene() }
         mode = Mode.NONE; modeToken++
         face.scaleTarget = 1f
         seekFoundCb = null
@@ -256,6 +274,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
             return
         }
 
+        if (!wasVisible && kid.awayReason != null && kid.welcomeBack()) { lastGreetAt = t; return }
         if (!wasVisible && absent > 10000 && t - lastGreetAt > 20000) { greet(absent); return }
         if (!wasVisible && absent in 1200L..5000L && !busy && Random.nextFloat() < .5f) {
             express("laugh", 1500); motion.play("giggle")
@@ -370,6 +389,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
         }
 
         timersTick(t)
+        kid.tick(t)
         when (mode) {
             Mode.CLOCK, Mode.SLEEP_CLOCK -> if (t % 1000 < 100) face.showText(clockText(), 0, if (mode == Mode.CLOCK) dateText() else null)
             Mode.STARE -> if (stareLoseAt in 1L..t) {
@@ -431,6 +451,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
     }
 
     private fun idle() {
+        if (!faceVisible && mode == Mode.NONE && Random.nextFloat() < .3f && kid.idlePlay()) return
         if (!faceVisible) {
             if (abs(gx) < .35f) { face.lookTX = Random.nextFloat() * 1.8f - .9f; face.lookTY = Random.nextFloat() * 1f - .5f }
         }
@@ -492,7 +513,9 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
     // ---------------- touch ----------------
     fun onTap() {
         touch()
+        if (face.ballOn) { face.kickBall(); kid.sfx.play("bounce"); express("joy", 800); return }
         when (mode) {
+            Mode.DEAD -> { kid.revive(); return }
             Mode.CLOCK, Mode.SLEEP_CLOCK, Mode.GALLERY, Mode.ALARM, Mode.DANCE -> { endMode(); express("happy", 1200); return }
             Mode.BIRTHDAY -> { blowCandles(byRobot = false); return }
             else -> {}
@@ -574,7 +597,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
                 if (reply == null) {
                     val e = ai.lastError
                     when {
-                        prefs.apiKey.startsWith("sk-ant-oat") -> say("That key is a Claude login token, not an API key. I need an API key from console dot anthropic dot com. It starts with s k dash ant dash api.", "sad") { done() }
+                        prefs.apiKey.startsWith("sk-ant-oat") && prefs.geminiKey.isBlank() && prefs.groqKey.isBlank() -> say("That key is a Claude login token, not an API key. I need an API key from console dot anthropic dot com. It starts with s k dash ant dash api.", "sad") { done() }
                         e.contains("401") || e.contains("403") -> say("My AI key was rejected. Please check it in settings.", "sad") { done() }
                         e.contains("404") || e.contains("400") -> say("My AI model name isn't working. Try clearing the model field in settings.", "confused") { done() }
                         e.contains("429") -> say("My AI brain is out of credits or too busy right now.", "sad") { done() }
