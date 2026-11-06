@@ -147,12 +147,14 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
         motion.enabled = prefs.move
         voice.applyVoice()
         act.setPreviewVisible(prefs.showCamera)
-        if (prefs.micReact && hasMic) senses.startMic() else senses.stopMic()
+        senses.captureEnabled = captureOn
+        if ((prefs.micReact || captureOn) && hasMic) senses.startMic() else senses.stopMic()
     }
 
     fun resume() {
         senses.start()
-        if (prefs.micReact && hasMic) senses.startMic()
+        senses.captureEnabled = captureOn
+        if ((prefs.micReact || captureOn) && hasMic) senses.startMic()
         if (hasCamera) vision.start()
         vision.paused = false
         if (started) runPendingTest()
@@ -192,7 +194,25 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
         say(q, expr) { listen(onAnswer) }
     }
 
+    /** Always-listening mode: our own mic + Groq Whisper (needs a Groq key). */
+    val captureOn: Boolean get() = prefs.alwaysListen && prefs.groqKey.isNotBlank() && hasMic
+    private var answerCb: ((String) -> Unit)? = null
+    private var answerToken = 0
+    private var lastExchange = 0L
+    private var transcribing = false
+
     fun listen(cb: (String) -> Unit) {
+        if (captureOn) {
+            val token = ++answerToken
+            answerCb = cb
+            face.listening = true
+            main.postDelayed({
+                if (token == answerToken && answerCb != null && !transcribing) {
+                    answerCb = null; face.listening = false; lastListenEnd = now(); cb("")
+                }
+            }, 9000)
+            return
+        }
         face.listening = true
         voice.listen { s ->
             face.listening = false
@@ -205,7 +225,56 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
 
     var heardOk = 0
     fun markBusy(b: Boolean) { busy = b; if (b) busySince = now() }
-    fun done() { markBusy(false); lastAskAt = now() }
+    fun done() { markBusy(false); lastAskAt = now(); lastExchange = now() }
+
+    override fun onSpeechStart() {
+        if (!captureOn) return
+        face.listenLevel = .6f
+        if (answerCb != null) face.listening = true
+    }
+
+    override fun onUtterance(pcm: ShortArray) {
+        if (!captureOn || voice.speaking) return
+        val waiting = answerCb
+        // Is this meant for me? Waiting for an answer, mid-conversation, or you're looking at me.
+        val inChat = now() - lastExchange < 25_000
+        val looking = faceVisible
+        transcribing = true
+        if (waiting != null || inChat || looking) face.show("listening", 4000)
+        Stt.groq(prefs.groqKey, pcm) { text ->
+            transcribing = false
+            val tx = text?.lowercase()?.trim()?.trim('.', '!', '?', ' ') ?: ""
+            if (text == null) { face.caption("(couldn't transcribe: ${Stt.lastError})", 5000); val cb = answerCb; if (cb != null) { answerCb = null; face.listening = false; cb("") }; return@groq }
+            if (Stt.junk(tx)) { val cb = answerCb; if (cb != null) { answerCb = null; face.listening = false; cb("") }; face.clearTemp(); return@groq }
+            val cb = answerCb
+            if (cb != null) {
+                answerCb = null; answerToken++; face.listening = false; lastListenEnd = now()
+                if (prefs.captions) face.caption("You: $tx", 3500)
+                heardOk++
+                cb(tx); return@groq
+            }
+            val name = robotName.lowercase()
+            val named = tx.contains(name) || tx.startsWith("hey robot")
+            if (sleeping && !named) return@groq
+            if (named || inChat || looking) {
+                if (prefs.captions) face.caption("You: $tx", 3500)
+                heardOk++
+                if (busy && !named) return@groq
+                if (mode != Mode.NONE && mode != Mode.DANCE && !named) return@groq
+                if (sleeping) wake(gentle = true)
+                if (mode == Mode.DANCE) endMode()
+                touch()
+                markBusy(true)
+                val rest = if (tx.contains(name)) tx.substring(tx.indexOf(name) + name.length).trim(' ', ',', '.') else tx.removePrefix("hey robot").trim()
+                lastExchange = now()
+                if (rest.isBlank()) { express("excited", 1500); say(listOf("Yes?", "Hmm?", "I'm here!").random(), "curious") { done() } }
+                else hear(rest)
+            } else {
+                face.clearTemp()
+                if (prefs.captions) face.caption("(heard: $tx)", 2500)
+            }
+        }
+    }
 
     fun touch() {
         lastInteraction = now()
@@ -422,7 +491,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
         } else return
 
         // hands-free listening (say the robot's name)
-        if (prefs.handsFree && faceVisible && !busy && !voice.listening && !voice.speaking && t - lastListenEnd > 1200) {
+        if (prefs.handsFree && !captureOn && faceVisible && !busy && !voice.listening && !voice.speaking && t - lastListenEnd > 1200) {
             listen { s -> if (s.isNotBlank()) handsFreeHeard(s) }
             return
         }
@@ -469,7 +538,6 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
             r < .22f -> { express("curious", 1800); face.lookTX = if (Random.nextBoolean()) 1f else -1f }
             r < .28f -> { face.hop(); motion.play("hop") }
             r < .32f && happiness > .7f -> { express("happy", 1500); motion.play("giggle") }
-            r < .35f && prefs.talk && !mutedChat() && happiness > .6f -> say("Hmm hmm hmm, la la la.", "singing")
             r < .37f && Calendar.getInstance().get(Calendar.MONTH) == 9 -> express("spooky", 2500)
             r < .42f && senses.isCharging -> express("charging", 2500)
             r < .46f -> express("thinking", 2000)
@@ -1084,13 +1152,31 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
         }
     }
 
+    fun aiTest() {
+        markBusy(true)
+        if (!ai.enabled) { say("I don't have any AI keys yet. Add a Claude, Gemini or Groq key in settings.", "sad") { done() }; return }
+        face.show("thinking", 10000)
+        ai.reset()
+        ai.ask("Say hi in five words.", robotName, userName) { reply ->
+            face.clearTemp()
+            if (reply != null) {
+                val text = reply.replace(Regex("^\\[(\\w+)]\\s*"), "")
+                say("My ${ai.lastProvider} brain works! It says: $text", "proud") { done() }
+            } else {
+                face.caption("(AI: ${ai.lastError})", 9000)
+                say("None of my AI brains answered. The reason is on screen.", "sad") { done() }
+            }
+        }
+    }
+
     fun micTest() {
         markBusy(true)
+        if (captureOn) face.caption("(listening with Groq Whisper)", 4000)
         say("Microphone test. Say something after the beep.", "listening") {
             motion.play("tick")
             listen { s ->
-                if (s.isNotBlank()) say("I heard: $s. My ears work, using the ${voice.engineName} speech engine!", "joy") { done() }
-                else say("I didn't hear anything. The problem is: ${voice.lastError.ifBlank { "unknown" }}. Engine: ${voice.engineName.ifBlank { "none" }}. Make sure the Google app is installed and updated.", "sad") { done() }
+                if (s.isNotBlank()) say("I heard: $s. My ears work, using ${if (captureOn) "Groq Whisper" else "the " + voice.engineName + " speech engine"}!", "joy") { done() }
+                else say("I didn't hear anything. The problem is: ${(if (captureOn) Stt.lastError else voice.lastError).ifBlank { "no speech detected" }}. Engine: ${voice.engineName.ifBlank { "none" }}. Make sure the Google app is installed and updated.", "sad") { done() }
             }
         }
     }
@@ -1115,7 +1201,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
         val tst = prefs.pendingTest
         if (tst.isBlank()) return
         prefs.pendingTest = ""
-        main.postDelayed({ if (tst == "spin") spinTest() else if (tst == "mic") micTest() }, 1200)
+        main.postDelayed({ when (tst) { "spin" -> spinTest(); "mic" -> micTest(); "ai" -> aiTest() } }, 1200)
     }
 
     // ---------------- stats ----------------

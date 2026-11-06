@@ -44,6 +44,9 @@ class Senses(private val act: Activity, private val l: Listener, private val mot
         fun onLoudNoise(level: Float)
         fun onBeat()
         fun onMusic(playing: Boolean)
+        /** A whole spoken phrase (16 kHz mono), captured when [captureEnabled]. */
+        fun onUtterance(pcm: ShortArray) {}
+        fun onSpeechStart() {}
     }
 
     private val sm = act.getSystemService(SensorManager::class.java)
@@ -209,6 +212,9 @@ class Senses(private val act: Activity, private val l: Listener, private val mot
     // ---------- microphone ----------
     @Volatile private var micRun = false
     @Volatile var micPaused = false
+    /** When on, the mic loop cuts out spoken phrases and hands them to [Listener.onUtterance]. */
+    @Volatile var captureEnabled = false
+    @Volatile var micLevel = 0f
     private var micThread: Thread? = null
     val micRunning: Boolean get() = micRun
 
@@ -235,8 +241,18 @@ class Senses(private val act: Activity, private val l: Listener, private val mot
         var lastBeat = 0L
         var musicOn = false
         var lastLoud = 0L
+        // voice activity detection
+        var noise = .006f
+        val preRoll = ArrayDeque<ShortArray>()
+        val phrase = ArrayList<ShortArray>()
+        var capturing = false
+        var speechMs = 0
+        var silenceMs = 0
+        var loudMs = 0
         while (micRun) {
             if (micPaused) {
+                if (capturing) { capturing = false; phrase.clear() }
+                preRoll.clear()
                 rec?.let { r -> try { r.stop(); r.release() } catch (_: Exception) {} }
                 rec = null
                 Thread.sleep(150)
@@ -257,6 +273,35 @@ class Senses(private val act: Activity, private val l: Listener, private val mot
             for (i in 0 until n) { val s = buf[i] / 32768f; sum += (s * s).toDouble() }
             val rms = sqrt(sum / n).toFloat()
             val now = SystemClock.uptimeMillis()
+            micLevel = rms
+            if (captureEnabled) {
+                val chunk = buf.copyOf(n)
+                val chunkMs = n * 1000 / rate
+                val thresh = max(.012f, noise * 3.2f)
+                if (!capturing) {
+                    preRoll.addLast(chunk); while (preRoll.size > 8) preRoll.removeFirst()
+                    if (rms > thresh) loudMs += chunkMs else loudMs = 0
+                    if (loudMs >= 150) {
+                        capturing = true; speechMs = loudMs; silenceMs = 0
+                        phrase.clear(); phrase.addAll(preRoll); preRoll.clear()
+                        main.post { l.onSpeechStart() }
+                    } else noise = (noise * .97f + rms * .03f).coerceIn(.002f, .05f)
+                } else {
+                    phrase.add(chunk)
+                    if (rms > thresh * .7f) { speechMs += chunkMs; silenceMs = 0 } else silenceMs += chunkMs
+                    val total = phrase.sumOf { it.size } * 1000 / rate
+                    if (silenceMs >= 900 || total >= 9000) {
+                        capturing = false; loudMs = 0
+                        if (speechMs >= 350) {
+                            val out = ShortArray(phrase.sumOf { it.size })
+                            var o = 0
+                            for (c in phrase) { System.arraycopy(c, 0, out, o, c.size); o += c.size }
+                            main.post { l.onUtterance(out) }
+                        }
+                        phrase.clear()
+                    }
+                }
+            }
             if (rms > .22f && rms > avg * 6f && now - lastLoud > 2500) {
                 lastLoud = now
                 val lv = rms

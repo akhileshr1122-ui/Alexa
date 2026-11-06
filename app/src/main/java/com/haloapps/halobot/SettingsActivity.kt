@@ -178,7 +178,9 @@ class SettingsActivity : ComponentActivity() {
         toggle("Talk", prefs.talk) { prefs.talk = it }
         toggle("Ask me questions on its own", prefs.chatty) { prefs.chatty = it }
         toggle("React to sounds & dance to music", prefs.micReact) { prefs.micReact = it }
-        toggle("Hands-free: listen for its name (uses more battery, may beep)", prefs.handsFree) { prefs.handsFree = it }
+        toggle("Always listening (uses your Groq key for speech-to-text). Talk while looking at it, or say its name", prefs.alwaysListen) { prefs.alwaysListen = it }
+        if (prefs.groqKey.isBlank()) note("Always listening needs a Groq API key (free tier available at console.groq.com). Without it, double-tap to talk.")
+        toggle("Old hands-free mode without Groq (Google speech, may beep)", prefs.handsFree) { prefs.handsFree = it }
         toggle("Hourly drink-water reminders", prefs.water) { prefs.water = it }
 
         header("Voice")
@@ -202,6 +204,10 @@ class SettingsActivity : ComponentActivity() {
         col.addView(Button(this).apply {
             text = "Microphone test"
             setOnClickListener { saves.forEach { s -> s() }; prefs.pendingTest = "mic"; finish() }
+        })
+        col.addView(Button(this).apply {
+            text = "AI brain test (checks each key)"
+            setOnClickListener { saves.forEach { s -> s() }; prefs.pendingTest = "ai"; finish() }
         })
         col.addView(Button(this).apply {
             text = "Spin test (vibration movement)"

@@ -46,6 +46,7 @@ class Prefs(ctx: Context) {
     var groqKey: String get() = str("groqKey", ""); set(v) = putStr("groqKey", v.trim())
     var groqModel: String get() = str("groqModel", "llama-3.3-70b-versatile"); set(v) = putStr("groqModel", v.trim())
 
+    var alwaysListen: Boolean get() = bool("alwaysListen", true); set(v) = putBool("alwaysListen", v)
     var kidMode: Boolean get() = bool("kidMode", true); set(v) = putBool("kidMode", v)
     var sounds: Boolean get() = bool("sounds", true); set(v) = putBool("sounds", v)
     var seeThings: Boolean get() = bool("seeThings", true); set(v) = putBool("seeThings", v)

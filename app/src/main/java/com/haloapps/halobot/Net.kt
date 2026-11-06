@@ -174,3 +174,65 @@ class AiChat(private val prefs: Prefs) {
 
     fun reset() { synchronized(this) { history.clear() } }
 }
+
+
+/** Speech-to-text through Groq's hosted Whisper (uses the Groq key). */
+object Stt {
+    @Volatile var lastError = ""
+
+    fun groq(key: String, pcm: ShortArray, cb: (String?) -> Unit) {
+        thread {
+            val text = try { call(key, pcm, "whisper-large-v3-turbo") } catch (e: Exception) {
+                try { call(key, pcm, "whisper-large-v3") } catch (e2: Exception) { lastError = e2.message ?: "speech-to-text failed"; null }
+            }
+            mainHandler.post { cb(text) }
+        }
+    }
+
+    private fun wav(pcm: ShortArray, rate: Int = 16000): ByteArray {
+        val data = pcm.size * 2
+        val b = java.nio.ByteBuffer.allocate(44 + data).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        b.put("RIFF".toByteArray()); b.putInt(36 + data); b.put("WAVE".toByteArray())
+        b.put("fmt ".toByteArray()); b.putInt(16); b.putShort(1); b.putShort(1); b.putInt(rate); b.putInt(rate * 2); b.putShort(2); b.putShort(16)
+        b.put("data".toByteArray()); b.putInt(data)
+        for (v in pcm) b.putShort(v)
+        return b.array()
+    }
+
+    private fun call(key: String, pcm: ShortArray, model: String): String {
+        val boundary = "----halobot" + System.nanoTime()
+        val c = URL("https://api.groq.com/openai/v1/audio/transcriptions").openConnection() as HttpURLConnection
+        try {
+            c.requestMethod = "POST"; c.doOutput = true
+            c.connectTimeout = 8000; c.readTimeout = 20000
+            c.setRequestProperty("Authorization", "Bearer $key")
+            c.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+            c.outputStream.use { o ->
+                fun field(name: String, value: String) {
+                    o.write("--$boundary\r\nContent-Disposition: form-data; name=\"$name\"\r\n\r\n$value\r\n".toByteArray())
+                }
+                field("model", model)
+                field("response_format", "json")
+                field("temperature", "0")
+                field("language", "en")
+                o.write("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"speech.wav\"\r\nContent-Type: audio/wav\r\n\r\n".toByteArray())
+                o.write(wav(pcm))
+                o.write("\r\n--$boundary--\r\n".toByteArray())
+            }
+            val code = c.responseCode
+            if (code !in 200..299) {
+                val err = try { c.errorStream?.bufferedReader()?.readText()?.take(140) } catch (_: Exception) { null }
+                throw Exception("HTTP $code ${err ?: ""}".trim())
+            }
+            lastError = ""
+            return JSONObject(c.inputStream.bufferedReader().readText()).optString("text").trim()
+        } finally { c.disconnect() }
+    }
+
+    /** Whisper sometimes "hears" these in silence or noise. */
+    fun junk(t: String): Boolean {
+        val s = t.lowercase().trim().trim('.', '!', '?', ',', ' ')
+        return s.isEmpty() || s.length < 2 || s in setOf("you", "thank you", "thanks", "thanks for watching", "thank you for watching", "bye", "okay", "oh", "uh", "um", "hmm", "so", "the", "i") ||
+            s.startsWith("subtitles by") || s.contains("amara.org")
+    }
+}
