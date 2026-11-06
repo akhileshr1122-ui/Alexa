@@ -19,16 +19,24 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: android-actions/setup-android@v3
         with:
-          gradle-version: "8.7"
+          packages: platform-tools
 
       - name: Build
         id: build
         run: |
           set -o pipefail
-          gradle assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon 2>&1 | tee build.log
           cp app/build/outputs/apk/release/app-release.apk /tmp/HaloBot.apk
+
+      - name: Report build errors
+        if: failure()
+        run: |
+          grep -E '^e: |error:|What went wrong|Could not find|Could not resolve' -A 2 build.log | head -60 | while IFS= read -r line; do
+            [ -n "$line" ] && echo "::error::${line//file:\/\/\/home\/runner\/work\/Alexa\/Alexa\//}"
+          done
 
       - name: Publish build log (for debugging)
         if: always()

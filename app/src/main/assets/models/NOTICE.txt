@@ -1,0 +1,9 @@
+Models used by OneBeam gesture control (all run on the device; nothing is uploaded).
+
+ghostfacenet.tflite
+  GhostFaceNet_W1.3_S1_ArcFace weights by HamadYA (https://github.com/HamadYA/GhostFaceNets), MIT License,
+  via deepface (https://github.com/serengil/deepface), MIT License. Converted to TFLite (dynamic-range int8).
+
+gesture_recognizer.task, pose_landmarker_lite.task, blaze_face_short_range.tflite
+  Google MediaPipe models (https://ai.google.dev/edge/mediapipe), Apache License 2.0.
+  Downloaded at build time.
