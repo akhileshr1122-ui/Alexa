@@ -258,14 +258,24 @@ class AiChat(private val prefs: Prefs) {
 object Stt {
     @Volatile var lastError = ""
 
-    fun groq(key: String, pcm: ShortArray, cb: (String?) -> Unit) {
+    @Volatile var hint = ""
+
+    /** [cb] gets (text, language code) or (null, null) on failure. */
+    fun groq(key: String, pcm: ShortArray, cb: (String?, String?) -> Unit) {
         thread {
-            val text = try { call(key, pcm, "whisper-large-v3-turbo") } catch (e: Exception) {
+            val res = try { call(key, pcm, "whisper-large-v3-turbo") } catch (e: Exception) {
                 try { call(key, pcm, "whisper-large-v3") } catch (e2: Exception) { lastError = e2.message ?: "speech-to-text failed"; null }
             }
-            mainHandler.post { cb(text) }
+            mainHandler.post { cb(res?.first, res?.second) }
         }
     }
+
+    private val LANGS = mapOf(
+        "english" to "en", "hindi" to "hi", "telugu" to "te", "tamil" to "ta", "kannada" to "kn", "malayalam" to "ml", "marathi" to "mr",
+        "bengali" to "bn", "gujarati" to "gu", "punjabi" to "pa", "urdu" to "ur", "spanish" to "es", "french" to "fr", "german" to "de",
+        "arabic" to "ar", "chinese" to "zh", "japanese" to "ja", "korean" to "ko", "portuguese" to "pt", "italian" to "it", "russian" to "ru",
+        "dutch" to "nl", "turkish" to "tr", "polish" to "pl", "indonesian" to "id", "vietnamese" to "vi", "thai" to "th", "nepali" to "ne",
+    )
 
     private fun wav(pcm: ShortArray, rate: Int = 16000): ByteArray {
         val data = pcm.size * 2
@@ -277,7 +287,7 @@ object Stt {
         return b.array()
     }
 
-    private fun call(key: String, pcm: ShortArray, model: String): String {
+    private fun call(key: String, pcm: ShortArray, model: String): Pair<String, String> {
         val boundary = "----halobot" + System.nanoTime()
         val c = URL("https://api.groq.com/openai/v1/audio/transcriptions").openConnection() as HttpURLConnection
         try {
@@ -290,9 +300,9 @@ object Stt {
                     o.write("--$boundary\r\nContent-Disposition: form-data; name=\"$name\"\r\n\r\n$value\r\n".toByteArray())
                 }
                 field("model", model)
-                field("response_format", "json")
+                field("response_format", "verbose_json")
                 field("temperature", "0")
-                field("language", "en")
+                if (hint.isNotBlank()) field("prompt", hint)
                 o.write("--$boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"speech.wav\"\r\nContent-Type: audio/wav\r\n\r\n".toByteArray())
                 o.write(wav(pcm))
                 o.write("\r\n--$boundary--\r\n".toByteArray())
@@ -303,7 +313,9 @@ object Stt {
                 throw Exception("HTTP $code ${err ?: ""}".trim())
             }
             lastError = ""
-            return JSONObject(c.inputStream.bufferedReader().readText()).optString("text").trim()
+            val j = JSONObject(c.inputStream.bufferedReader().readText())
+            val lang = j.optString("language").lowercase().let { LANGS[it] ?: it.take(2).ifBlank { "en" } }
+            return j.optString("text").trim() to lang
         } finally { c.disconnect() }
     }
 

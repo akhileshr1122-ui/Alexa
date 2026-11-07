@@ -23,7 +23,7 @@ class Prefs(ctx: Context) {
     var birthday: String get() = str("birthday", ""); set(v) = putStr("birthday", v)
     var city: String get() = str("city", ""); set(v) = putStr("city", v)
     var theme: Int get() = int("theme", 0); set(v) = putInt("theme", v)
-    var pitch: Float get() = float("pitch", 1.85f); set(v) = putFloat("pitch", v)
+    var pitch: Float get() = float("pitch", 1.5f); set(v) = putFloat("pitch", v)
     var rate: Float get() = float("rate", 1.08f); set(v) = putFloat("rate", v)
 
     var move: Boolean get() = bool("move", true); set(v) = putBool("move", v)
@@ -47,6 +47,8 @@ class Prefs(ctx: Context) {
     var groqModel: String get() = str("groqModel", "openai/gpt-oss-120b"); set(v) = putStr("groqModel", v.trim())
 
     var alwaysListen: Boolean get() = bool("alwaysListen", true); set(v) = putBool("alwaysListen", v)
+    var cloudVoice: Boolean get() = bool("cloudVoice", true); set(v) = putBool("cloudVoice", v)
+    var cloudVoiceName: String get() = str("cloudVoiceName", "hannah"); set(v) = putStr("cloudVoiceName", v)
     var kidMode: Boolean get() = bool("kidMode", true); set(v) = putBool("kidMode", v)
     var sounds: Boolean get() = bool("sounds", true); set(v) = putBool("sounds", v)
     var seeThings: Boolean get() = bool("seeThings", true); set(v) = putBool("seeThings", v)

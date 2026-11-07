@@ -126,6 +126,7 @@ class Vision2(private val ctx: Context, private val listener: Listener) {
             val e = embedLargestFace(frame)
             if (e != null) {
                 val (p, score) = match(e)
+                if (p != null && score > .5f) reinforce(p, e)
                 main.post { listener.onPerson(p?.name, p?.relation, score) }
             }
         }
@@ -195,7 +196,7 @@ class Vision2(private val ctx: Context, private val listener: Listener) {
         synchronized(people) {
             for (p in people) {
                 val e = JSONArray()
-                for (v in p.emb.takeLast(8)) e.put(JSONArray().apply { v.forEach { put(it.toDouble()) } })
+                for (v in p.emb.takeLast(20)) e.put(JSONArray().apply { v.forEach { put(it.toDouble()) } })
                 arr.put(JSONObject().put("n", p.name).put("r", p.relation).put("e", e))
             }
         }
@@ -247,6 +248,18 @@ class Vision2(private val ctx: Context, private val listener: Listener) {
         }
     }
     val enrolling: Boolean get() = enrollName != null
+
+    private var lastSave = 0L
+    /** Keeps learning a known face from good matches (new angles, lighting, glasses...). */
+    private fun reinforce(p: Person, e: FloatArray) {
+        synchronized(people) {
+            if (p.emb.any { v -> var d = 0f; for (i in v.indices) d += v[i] * e[i]; d > .85f }) return
+            p.emb.add(e)
+            while (p.emb.size > 20) p.emb.removeAt(3)
+        }
+        val t = SystemClock.uptimeMillis()
+        if (t - lastSave > 60_000) { lastSave = t; savePeople() }
+    }
 
     private fun match(e: FloatArray): Pair<Person?, Float> {
         var best: Person? = null; var bestScore = 0f

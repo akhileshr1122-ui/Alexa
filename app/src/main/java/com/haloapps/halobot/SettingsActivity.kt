@@ -184,6 +184,21 @@ class SettingsActivity : ComponentActivity() {
         toggle("Hourly drink-water reminders", prefs.water) { prefs.water = it }
 
         header("Voice")
+        toggle("Natural human voice (Groq Orpheus, needs Groq key)", prefs.cloudVoice) { prefs.cloudVoice = it }
+        col.addView(TextView(this).apply { text = "Natural voice"; setTextColor(Color.WHITE); textSize = 14f })
+        val voices = listOf("hannah", "autumn", "diana", "austin", "daniel", "troy")
+        val vs = Spinner(this)
+        vs.adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_spinner_dropdown_item, voices.map { it.replaceFirstChar { c -> c.uppercase() } }) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
+                (super.getView(position, convertView, parent) as TextView).apply { setTextColor(Color.WHITE) }
+        }
+        vs.setSelection(voices.indexOf(prefs.cloudVoiceName).coerceAtLeast(0))
+        vs.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) { prefs.cloudVoiceName = voices[pos] }
+            override fun onNothingSelected(p: AdapterView<*>?) {}
+        }
+        col.addView(vs)
+        note("Pitch makes the voice more kid-like. Speed changes talking speed.")
         slider("Pitch", prefs.pitch, .5f, 2.2f) { prefs.pitch = it }
         slider("Speed", prefs.rate, .6f, 1.6f) { prefs.rate = it }
         col.addView(Button(this).apply {
@@ -227,6 +242,15 @@ class SettingsActivity : ComponentActivity() {
         field("Gemini model", prefs.geminiModel, "gemini-3.8-flash") { prefs.geminiModel = it.ifBlank { "gemini-3.8-flash" } }
         field("Groq API key (console.groq.com)", prefs.groqKey, "gsk_...", password = true) { prefs.groqKey = it }
         field("Groq model", prefs.groqModel, "openai/gpt-oss-120b") { prefs.groqModel = it.ifBlank { "openai/gpt-oss-120b" } }
+
+        header("Memory")
+        val mem = Memory(this)
+        val facts = mem.facts()
+        note(if (facts.isEmpty()) "Nothing remembered yet. Just talk to it - it saves things you tell it." else facts.takeLast(25).joinToString("\n") { "• $it" })
+        col.addView(Button(this).apply {
+            text = "Erase all memories"
+            setOnClickListener { mem.clear(); text = "Memories erased" }
+        })
 
         header("Stats")
         val days = if (prefs.firstDay == 0L) 1 else ((System.currentTimeMillis() - prefs.firstDay) / 86_400_000L) + 1

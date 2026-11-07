@@ -13,7 +13,11 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.media.MediaPlayer
+import android.media.PlaybackParams
+import java.io.File
 import java.util.Locale
+import kotlin.concurrent.thread
 
 /** Text-to-speech mouth + speech-recognition ears. */
 class Voice(private val ctx: Context, private val prefs: Prefs) {
@@ -57,8 +61,100 @@ class Voice(private val ctx: Context, private val prefs: Prefs) {
     }
 
     fun applyVoice() {
-        tts?.setPitch(prefs.pitch)
+        tts?.setPitch(if (prefs.cloudVoice) 1f + (prefs.pitch - 1f) * .5f else prefs.pitch)
         tts?.setSpeechRate(prefs.rate)
+        pickBestVoice(Locale.US)
+    }
+
+    /** Chooses the most natural installed voice for a language (neural / high quality first). */
+    private fun pickBestVoice(loc: Locale) {
+        val e = tts ?: return
+        try {
+            val vs = e.voices ?: return
+            val best = vs.filter { it.locale.language == loc.language && !it.features.contains("notInstalled") }
+                .sortedWith(compareByDescending<android.speech.tts.Voice> { it.quality }
+                    .thenBy { if (it.locale.country == loc.country) 0 else 1 }
+                    .thenBy { if (it.isNetworkConnectionRequired) 0 else 1 })
+                .firstOrNull()
+            if (best != null) e.voice = best else e.language = loc
+        } catch (_: Exception) { try { e.language = loc } catch (_: Exception) {} }
+    }
+
+    // ---------- natural cloud voice (Groq Orpheus) ----------
+    private var player: MediaPlayer? = null
+    private var cloudBroken = false
+    var cloudError = ""; private set
+    private var speakSession = 0
+
+    private fun cloudOk(lang: String?) = prefs.cloudVoice && prefs.groqKey.isNotBlank() && !cloudBroken && (lang == null || lang.startsWith("en"))
+
+    private fun chunks(text: String): List<String> {
+        val parts = text.split(Regex("(?<=[.!?])\\s+")).filter { it.isNotBlank() }
+        val out = ArrayList<String>(); val sb = StringBuilder()
+        for (p in parts) {
+            if (sb.isNotEmpty() && sb.length + p.length > 180) { out.add(sb.toString()); sb.clear() }
+            if (sb.isNotEmpty()) sb.append(' ')
+            sb.append(p)
+        }
+        if (sb.isNotEmpty()) out.add(sb.toString())
+        return out.flatMap { if (it.length <= 190) listOf(it) else it.chunked(190) }
+    }
+
+    private fun synth(text: String): ByteArray {
+        val c = java.net.URL("https://api.groq.com/openai/v1/audio/speech").openConnection() as java.net.HttpURLConnection
+        try {
+            c.requestMethod = "POST"; c.doOutput = true; c.connectTimeout = 8000; c.readTimeout = 20000
+            c.setRequestProperty("Authorization", "Bearer ${prefs.groqKey}")
+            c.setRequestProperty("Content-Type", "application/json")
+            val body = org.json.JSONObject().put("model", "canopylabs/orpheus-v1-english").put("voice", prefs.cloudVoiceName.ifBlank { "hannah" })
+                .put("input", text).put("response_format", "wav")
+            c.outputStream.use { it.write(body.toString().toByteArray()) }
+            if (c.responseCode !in 200..299) {
+                val err = try { c.errorStream?.bufferedReader()?.readText()?.take(200) } catch (_: Exception) { null }
+                throw Exception("HTTP ${c.responseCode} ${err ?: ""}")
+            }
+            return c.inputStream.readBytes()
+        } finally { c.disconnect() }
+    }
+
+    private fun sayCloud(text: String, id: String) {
+        val my = ++speakSession
+        thread(name = "cloud-tts") {
+            val files = ArrayList<File>()
+            try {
+                chunks(text).forEachIndexed { i, ch ->
+                    val f = File(ctx.cacheDir, "tts_${my}_$i.wav")
+                    f.writeBytes(synth(ch))
+                    files.add(f)
+                }
+            } catch (e: Exception) {
+                cloudError = e.message ?: "voice error"
+                if (cloudError.contains("terms") || cloudError.contains("401") || cloudError.contains("403") || cloudError.contains("404")) cloudBroken = true
+                main.post { if (my == speakSession) { tts?.speak(text, TextToSpeech.QUEUE_FLUSH, Bundle(), id) } }
+                return@thread
+            }
+            main.post { if (my == speakSession) playFiles(files, 0, id, my) }
+        }
+    }
+
+    private fun playFiles(files: List<File>, i: Int, id: String, my: Int) {
+        if (my != speakSession) return
+        if (i >= files.size) { files.forEach { it.delete() }; finish(id, true); return }
+        try {
+            val mp = MediaPlayer()
+            player = mp
+            mp.setDataSource(files[i].absolutePath)
+            mp.prepare()
+            val pitch = (1f + (prefs.pitch - 1f) * .35f).coerceIn(.8f, 1.5f)
+            try { mp.playbackParams = PlaybackParams().setPitch(pitch).setSpeed(prefs.rate.coerceIn(.7f, 1.5f)) } catch (_: Exception) {}
+            mp.setOnCompletionListener { m -> m.release(); if (player === m) player = null; playFiles(files, i + 1, id, my) }
+            if (i == 0) { speaking = true; onSpeaking?.invoke(true) }
+            mp.start()
+        } catch (e: Exception) {
+            cloudError = e.message ?: "playback error"
+            files.forEach { it.delete() }
+            finish(id, true)
+        }
     }
 
     private fun finish(id: String?, runCallback: Boolean) {
@@ -69,19 +165,32 @@ class Voice(private val ctx: Context, private val prefs: Prefs) {
     }
 
     /** Speaks [text]; [then] runs when finished (also when speech is disabled). */
-    fun say(text: String, then: (() -> Unit)? = null) {
+    fun say(text: String, lang: String? = null, then: (() -> Unit)? = null) {
         val engine = tts
-        if (!prefs.talk || !ready || engine == null) {
+        if (!prefs.talk || (!ready && !cloudOk(lang)) || (engine == null && !cloudOk(lang))) {
             main.postDelayed({ then?.invoke() }, 500L + text.length * 35L)
             return
         }
+        stopPlayer()
         val id = "u${counter++}"
         if (then != null) pending[id] = then
+        if (cloudOk(lang)) { sayCloud(text, id); return }
+        if (engine == null) return
+        val loc = if (lang != null && !lang.startsWith("en")) Locale.forLanguageTag(lang) else Locale.US
+        if (loc.language != currentLang) { currentLang = loc.language; pickBestVoice(loc) }
         engine.speak(text, TextToSpeech.QUEUE_FLUSH, Bundle(), id)
+    }
+    private var currentLang = "en"
+
+    private fun stopPlayer() {
+        speakSession++
+        player?.let { p -> try { p.stop(); p.release() } catch (_: Exception) {} }
+        player = null
     }
 
     fun stopSpeaking() {
         pending.clear()
+        stopPlayer()
         try { tts?.stop() } catch (_: Exception) {}
         speaking = false
         onSpeaking?.invoke(false)

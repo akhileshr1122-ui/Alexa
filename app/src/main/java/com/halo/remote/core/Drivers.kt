@@ -40,6 +40,7 @@ class SamsungDriver(device: TvDevice, store: CredentialStore) : TvDriver(device,
             Key.VOL_UP -> "KEY_VOLUP"; Key.VOL_DOWN -> "KEY_VOLDOWN"; Key.MUTE -> "KEY_MUTE"
             Key.CH_UP -> "KEY_CHUP"; Key.CH_DOWN -> "KEY_CHDOWN"; Key.INPUT -> "KEY_SOURCE"
             Key.PLAY_PAUSE -> "KEY_PLAY_BACK"; Key.REWIND -> "KEY_REWIND"; Key.FORWARD -> "KEY_FF"
+            Key.PLAY -> "KEY_PLAY"; Key.PAUSE -> "KEY_PAUSE"
             Key.STOP -> "KEY_STOP"; Key.DEL -> null; Key.SEARCH -> null
             else -> key.digit?.let { "KEY_$it" }
         }
@@ -509,7 +510,7 @@ class FireTvDriver(device: TvDevice, store: CredentialStore) : TvDriver(device, 
     override fun doSend(key: Key) {
         val a = adb ?: throw UserFacingException("Not connected")
         val f = fast
-        if (f != null) {
+        if (f != null && key != Key.PLAY && key != Key.PAUSE && key != Key.PLAY_PAUSE) {
             try {
                 a.write(f, "press ${key.androidCode}\n")
                 return

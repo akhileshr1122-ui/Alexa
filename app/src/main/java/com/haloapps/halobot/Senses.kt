@@ -261,8 +261,14 @@ class Senses(private val act: Activity, private val l: Listener, private val mot
             var r = rec
             if (r == null) {
                 try {
-                    val nr = AudioRecord(MediaRecorder.AudioSource.MIC, rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, max(minBuf, 4096))
+                    val src = if (captureEnabled) MediaRecorder.AudioSource.VOICE_COMMUNICATION else MediaRecorder.AudioSource.MIC
+                    val nr = AudioRecord(src, rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, max(minBuf, 4096))
                     if (nr.state != AudioRecord.STATE_INITIALIZED) { nr.release(); Thread.sleep(1000); continue }
+                    if (captureEnabled) {
+                        // Phone's built-in noise suppression + echo cancelling (what voice assistants use).
+                        try { if (android.media.audiofx.NoiseSuppressor.isAvailable()) android.media.audiofx.NoiseSuppressor.create(nr.audioSessionId)?.enabled = true } catch (_: Exception) {}
+                        try { if (android.media.audiofx.AcousticEchoCanceler.isAvailable()) android.media.audiofx.AcousticEchoCanceler.create(nr.audioSessionId)?.enabled = true } catch (_: Exception) {}
+                    }
                     nr.startRecording()
                     r = nr; rec = nr
                 } catch (e: Exception) { Thread.sleep(1000); continue }

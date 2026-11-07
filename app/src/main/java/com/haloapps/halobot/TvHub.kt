@@ -44,6 +44,14 @@ class TvHub(private val ctx: Context) {
 
     fun connect() { drv()?.connect() }
 
+    /** Re-reads the chosen TV (settings may have changed it) and connects in the background so commands are instant. */
+    fun refresh() {
+        val saved = DeviceStore.last(ctx) ?: return
+        val cur = driver
+        if (cur == null || cur.device.id != saved.id || cur.device.host != saved.host) use(saved)
+        if (lastState != ConnState.Connected) driver?.connect()
+    }
+
     fun press(k: Key): Boolean { val d = drv() ?: return false; d.press(k); return true }
     fun pressMany(k: Key, times: Int): Boolean { val d = drv() ?: return false; repeat(times) { d.press(k) }; return true }
     fun launch(name: String, cb: (String?) -> Unit): Boolean {

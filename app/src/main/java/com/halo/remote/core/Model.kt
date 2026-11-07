@@ -21,7 +21,7 @@ enum class Key(val androidCode: Int) {
     POWER(26), UP(19), DOWN(20), LEFT(21), RIGHT(22), OK(23),
     BACK(4), HOME(3), MENU(82), SETTINGS(176), INFO(165), GUIDE(172), SEARCH(84),
     VOL_UP(24), VOL_DOWN(25), MUTE(164), CH_UP(166), CH_DOWN(167), INPUT(178),
-    PLAY_PAUSE(85), REWIND(89), FORWARD(90), STOP(86), DEL(67),
+    PLAY_PAUSE(85), REWIND(89), FORWARD(90), STOP(86), DEL(67), PLAY(126), PAUSE(127),
     D0(7), D1(8), D2(9), D3(10), D4(11), D5(12), D6(13), D7(14), D8(15), D9(16);
 
     val digit: Int? get() = if (name.length == 2 && name[0] == 'D') name[1] - '0' else null

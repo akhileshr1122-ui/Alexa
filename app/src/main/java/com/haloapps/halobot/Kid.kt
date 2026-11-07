@@ -243,12 +243,29 @@ class Kid(private val r: Robot) : Vision2.Listener {
     }
 
     // ---------------- people & romance ----------------
+    private var lastPersonAt = 0L
+    private var unknownStreak = 0
+    private var lastStrangerAsk = 0L
+    private var ownerEnrollTried = false
+    private var faceStableSince = 0L
+    /** Name of the recognised person currently in view, if any. */
+    val currentPerson: String? get() = if (r.faceVisible && now() - lastPersonAt < 12_000) lastPerson else null
+
     override fun onPerson(name: String?, relation: String?, score: Float) {
-        if (name == null) return
-        lastPerson = name
         val t = now()
+        if (name == null) {
+            unknownStreak++
+            // Only ask "who are you?" when we're quite sure: several misses in a row, a close single face, long cooldown.
+            if (unknownStreak >= 4 && vision2.peopleList.isNotEmpty() && free() && t - lastStrangerAsk > 30 * 60_000L && t - lastPersonAt > 60_000L) {
+                lastStrangerAsk = t; unknownStreak = 0
+                askStranger()
+            }
+            return
+        }
+        unknownStreak = 0
+        lastPerson = name; lastPersonAt = t
         if (relation == "partner" && r.prefs.romance && t - lastRomance > 3 * 60_000 && free()) { romance(name); return }
-        if (relation != "me" && t - (lastPersonGreet[name] ?: 0L) > 10 * 60_000 && free()) {
+        if (relation != "me" && t - (lastPersonGreet[name] ?: 0L) > 30 * 60_000 && free()) {
             lastPersonGreet[name] = t
             sfx.play("hello"); r.express("excited", 2000); r.motion.play("wiggle")
             r.say(kidLine("Hi $name! I remember you! Yay!", "Hello again, $name!"))
@@ -288,7 +305,33 @@ class Kid(private val r: Robot) : Vision2.Listener {
         }
     }
 
-    fun enroll(name: String, relation: String) {
+    private fun askStranger() {
+        r.ask(kidLine("Ooh, hi! I don't think we've met. What's your name?", "Hello! I don't think we've met. What's your name?"), "curious") { ans ->
+            val n = Regex("(?:my name is|i am|i'm|it's|this is|call me)\\s+([a-z]+)").find(ans)?.groupValues?.get(1) ?: Regex("^([a-z]+)$").find(ans.trim())?.groupValues?.get(1)
+            if (n == null) { r.done(); return@ask }
+            val name = n.replaceFirstChar { it.uppercase() }
+            r.done()
+            enroll(name, if (name.equals(r.userName, true)) "me" else "friend")
+        }
+    }
+
+    /** Quietly learns the owner's face the first time it gets a good look, so it never treats you as a stranger. */
+    private fun autoEnrollOwner(t: Long) {
+        if (ownerEnrollTried || r.userName.isBlank() || vision2.enrolling) return
+        if (vision2.peopleList.any { it.second == "me" }) { ownerEnrollTried = true; return }
+        if (!r.faceVisible) { faceStableSince = 0; return }
+        if (faceStableSince == 0L) faceStableSince = t
+        if (t - faceStableSince > 4000 && free()) {
+            ownerEnrollTried = true
+            vision2.enroll(r.userName, "me") { n -> if (n == 0) ownerEnrollTried = false }
+        }
+    }
+
+    fun enroll(name: String, relation: String, speak: Boolean = true) {
+        if (!speak) {
+            vision2.enroll(name, relation) { n -> if (n > 0) { sfx.play("happy"); r.face.caption("(learned $name's face)", 3000) } else r.face.caption("(couldn't see a face clearly)", 3000) }
+            return
+        }
         r.markBusy(true)
         r.say(kidLine("Okay! Look at me and hold still. I'm remembering your face!", "Look at me and hold still for a moment."), "focused") {
             sfx.play("boop")
@@ -337,6 +380,7 @@ class Kid(private val r: Robot) : Vision2.Listener {
 
     // ---------------- weather, music, idle play ----------------
     fun tick(t: Long) {
+        autoEnrollOwner(t)
         // weather outside -> rain / snow on screen
         if (r.prefs.weatherAmbient && r.prefs.city.isNotBlank() && t - lastWeatherCheck > 30 * 60_000L) {
             lastWeatherCheck = t

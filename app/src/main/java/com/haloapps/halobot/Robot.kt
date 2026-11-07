@@ -28,6 +28,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
     val box = MusicBox()
     val tv = TvHub(act)
     val kid = Kid(this)
+    val agent = Agent(this)
 
     var mode = Mode.NONE
     private var modeStart = 0L
@@ -158,7 +159,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
         if (hasCamera) vision.start()
         vision.paused = false
         if (started) runPendingTest()
-        tv.close()
+        tv.refresh()
         kid.vision2.reload()
     }
 
@@ -181,12 +182,15 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
     }
 
     // ---------------- helpers ----------------
+    /** Language of the last thing the user said (from speech-to-text), so replies are spoken in it. */
+    var replyLang: String? = null
+
     fun express(name: String, ms: Long = 2500) { face.show(name, ms); kid.soundFor(name) }
 
     fun say(text: String, expr: String? = null, exprMs: Long = 0, then: (() -> Unit)? = null) {
         if (expr != null) face.show(expr, if (exprMs > 0) exprMs else (1500L + text.length * 60L))
         if (prefs.captions) face.caption("$robotName: $text", 2500L + text.length * 55L)
-        voice.say(text, then)
+        voice.say(text, lang = replyLang, then = then)
     }
 
     fun ask(q: String, expr: String = "curious", onAnswer: (String) -> Unit) {
@@ -237,12 +241,14 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
         if (!captureOn || voice.speaking) return
         val waiting = answerCb
         // Is this meant for me? Waiting for an answer, mid-conversation, or you're looking at me.
-        val inChat = now() - lastExchange < 25_000
+        val inChat = now() - lastExchange < 40_000
         val looking = faceVisible
         transcribing = true
         if (waiting != null || inChat || looking) face.show("listening", 4000)
-        Stt.groq(prefs.groqKey, pcm) { text ->
+        Stt.hint = listOf(robotName, userName).filter { it.isNotBlank() }.joinToString(", ")
+        Stt.groq(prefs.groqKey, pcm) { text, lang ->
             transcribing = false
+            if (text != null && !Stt.junk(text)) replyLang = lang
             val tx = text?.lowercase()?.trim()?.trim('.', '!', '?', ' ') ?: ""
             if (text == null) { face.caption("(couldn't transcribe: ${Stt.lastError})", 5000); val cb = answerCb; if (cb != null) { answerCb = null; face.listening = false; cb("") }; return@groq }
             if (Stt.junk(tx)) { val cb = answerCb; if (cb != null) { answerCb = null; face.listening = false; cb("") }; face.clearTemp(); return@groq }
@@ -353,12 +359,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
 
         if (busy || voice.listening || mode != Mode.NONE) return
 
-        if (newIds.isNotEmpty() && seen.faces.size > 1 && t - lastNewFriend > 30000) {
-            lastNewFriend = t
-            express("excited", 2500); motion.play("wiggle")
-            say(if (seen.faces.size > 2) "Whoa, so many friends!" else "Ooh, a new friend! Hello!")
-            return
-        }
+
         if (f.size > .6f && t - lastCloseReact > 7000) {
             lastCloseReact = t
             express(if (Random.nextBoolean()) "shy" else "surprised", 2200); motion.play("shy")
@@ -653,8 +654,57 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
 
     fun hear(s: String) {
         touch()
+        if (quickCommand(s)) return
+        if (ai.enabled) { think(s); return }
         if (handleCommand(this, s)) return
         chat(s)
+    }
+
+    /** Instant, no-AI handling for one-word TV/stop commands so they feel snappy. */
+    private fun quickCommand(raw: String): Boolean {
+        val t = raw.lowercase().trim().trim('.', '!', '?', ',', ' ').removePrefix("please ").removeSuffix(" please")
+        if (t in setOf("stop", "be quiet", "shut up", "shh", "quiet", "stop talking")) {
+            voice.stopSpeaking(); motion.stop(); if (mode != Mode.NONE) endMode()
+            express("shy", 1200); done(); return true
+        }
+        if (!tv.hasTv) return false
+        val key = when (t) {
+            "pause", "pause it", "pause the tv", "pause tv", "pause the movie", "pause the show" -> "PAUSE"
+            "play", "resume", "play it", "continue", "unpause", "resume the tv" -> "PLAY"
+            "mute", "mute the tv", "unmute" -> "MUTE"
+            "home", "go home", "tv home" -> "HOME"
+            "back", "go back" -> "BACK"
+            "volume up", "louder", "turn it up" -> "VOL_UP"
+            "volume down", "quieter", "turn it down", "softer" -> "VOL_DOWN"
+            "ok", "okay", "select", "enter" -> "OK"
+            else -> null
+        } ?: return false
+        val k = com.halo.remote.core.Key.valueOf(key)
+        tv.pressMany(k, if (key.startsWith("VOL")) 3 else 1)
+        kid.sfx.play("boop"); express(if (key == "PAUSE") "focused" else "happy", 1000)
+        done(); return true
+    }
+
+    /** Lets the AI brain decide what to say and do (with tools). */
+    fun think(s: String) {
+        markBusy(true)
+        face.show("thinking", 20000)
+        agent.handle(s) { reply ->
+            face.clearTemp()
+            if (reply == null) {
+                face.caption("(AI: ${agent.lastError})", 7000)
+                if (!handleCommand(this, s)) offlineChat(s, aiFailed = true)
+                return@handle
+            }
+            val m = Regex("^\\s*\\[(\\w+)]\\s*").find(reply)
+            val emo = m?.groupValues?.get(1)?.lowercase()
+            val text = (if (m != null) reply.substring(m.range.last + 1) else reply).replace(Regex("\\[[a-z_ ]+]"), "").trim()
+            val faceName = when { emo == null -> "happy"; Faces.all.containsKey(emo) -> emo; emo == "cheerful" -> "joy"; else -> "happy" }
+            if (faceName in listOf("excited", "joy", "laugh", "love", "party")) motion.play("wiggle")
+            lastExchange = now()
+            if (text.isBlank()) { express(faceName, 2000); done(); return@handle }
+            say(text, faceName) { done() }
+        }
     }
 
     fun chat(s: String) {
@@ -684,7 +734,7 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
         } else offlineChat(s, aiFailed = false)
     }
 
-    private fun offlineChat(s: String, aiFailed: Boolean) {
+    fun offlineChat(s: String, aiFailed: Boolean) {
         val pos = Regex("\\b(good|great|awesome|amazing|happy|love|nice|cool|fun|excited|yes|yeah)\\b").containsMatchIn(s)
         val neg = Regex("\\b(sad|tired|bad|terrible|awful|angry|upset|stressed|lonely|sick|bored|worried|anxious)\\b").containsMatchIn(s)
         when {
@@ -699,6 +749,10 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
     }
 
     fun askRandomQuestion() {
+        if (ai.enabled) {
+            think("(You notice the user is in front of you and it's quiet. Start a short, fun, natural conversation - a curious question, a playful comment, or something personal using what you remember. Don't mention this note.)")
+            return
+        }
         if (userName.isBlank() && Random.nextFloat() < .6f) { askName(); return }
         val q = Content.questions.random()
         ask(q.q) { ans ->
@@ -1156,14 +1210,14 @@ class Robot(val act: MainActivity, val face: FaceView, preview: PreviewView) : S
         markBusy(true)
         if (!ai.enabled) { say("I don't have any AI keys yet. Add a Claude, Gemini or Groq key in settings.", "sad") { done() }; return }
         face.show("thinking", 10000)
-        ai.reset()
-        ai.ask("Say hi in five words.", robotName, userName) { reply ->
+        agent.handle("(Brain test: reply with a short friendly hello.)") { reply ->
             face.clearTemp()
             if (reply != null) {
-                val text = reply.replace(Regex("^\\[(\\w+)]\\s*"), "")
-                say("My ${ai.lastProvider} brain works! It says: $text", "proud") { done() }
+                val text = reply.replace(Regex("^\\s*\\[(\\w+)]\\s*"), "")
+                val v = if (prefs.cloudVoice && prefs.groqKey.isNotBlank()) " Voice: natural Groq voice." else ""
+                say("My ${agent.lastProvider} brain works! $text$v", "proud") { done(); if (voice.cloudError.isNotBlank()) face.caption("(voice: ${voice.cloudError})", 9000) }
             } else {
-                face.caption("(AI: ${ai.lastError})", 9000)
+                face.caption("(AI: ${agent.lastError})", 9000)
                 say("None of my AI brains answered. The reason is on screen.", "sad") { done() }
             }
         }
