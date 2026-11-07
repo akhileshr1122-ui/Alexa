@@ -44,7 +44,7 @@ class Prefs(ctx: Context) {
     var geminiKey: String get() = str("geminiKey", ""); set(v) = putStr("geminiKey", v.trim())
     var geminiModel: String get() = str("geminiModel", "gemini-3.8-flash"); set(v) = putStr("geminiModel", v.trim())
     var groqKey: String get() = str("groqKey", ""); set(v) = putStr("groqKey", v.trim())
-    var groqModel: String get() = str("groqModel", "llama-3.3-70b-versatile"); set(v) = putStr("groqModel", v.trim())
+    var groqModel: String get() = str("groqModel", "openai/gpt-oss-120b"); set(v) = putStr("groqModel", v.trim())
 
     var alwaysListen: Boolean get() = bool("alwaysListen", true); set(v) = putBool("alwaysListen", v)
     var kidMode: Boolean get() = bool("kidMode", true); set(v) = putBool("kidMode", v)

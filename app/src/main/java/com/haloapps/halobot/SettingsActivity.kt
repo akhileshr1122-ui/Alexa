@@ -226,7 +226,7 @@ class SettingsActivity : ComponentActivity() {
         field("Gemini API key (aistudio.google.com)", prefs.geminiKey, "AIza...", password = true) { prefs.geminiKey = it }
         field("Gemini model", prefs.geminiModel, "gemini-3.8-flash") { prefs.geminiModel = it.ifBlank { "gemini-3.8-flash" } }
         field("Groq API key (console.groq.com)", prefs.groqKey, "gsk_...", password = true) { prefs.groqKey = it }
-        field("Groq model", prefs.groqModel, "llama-3.3-70b-versatile") { prefs.groqModel = it.ifBlank { "llama-3.3-70b-versatile" } }
+        field("Groq model", prefs.groqModel, "openai/gpt-oss-120b") { prefs.groqModel = it.ifBlank { "openai/gpt-oss-120b" } }
 
         header("Stats")
         val days = if (prefs.firstDay == 0L) 1 else ((System.currentTimeMillis() - prefs.firstDay) / 86_400_000L) + 1

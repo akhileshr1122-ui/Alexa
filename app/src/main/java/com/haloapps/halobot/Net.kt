@@ -110,6 +110,8 @@ class AiChat(private val prefs: Prefs) {
                     return out
                 }
                 errors.add("$name: empty reply")
+            } catch (e: java.net.SocketTimeoutException) {
+                errors.add("$name: timeout")
             } catch (e: Exception) {
                 errors.add("$name: ${e.message ?: e.javaClass.simpleName}")
             }
@@ -119,11 +121,23 @@ class AiChat(private val prefs: Prefs) {
         return null
     }
 
-    private fun post(url: String, headers: Map<String, String>, body: JSONObject): JSONObject {
+    private class HttpError(val code: Int, msg: String) : Exception(msg)
+
+    private fun get(url: String, headers: Map<String, String>): JSONObject {
+        val c = URL(url).openConnection() as HttpURLConnection
+        try {
+            c.connectTimeout = 10000; c.readTimeout = 15000
+            for ((k, v) in headers) c.setRequestProperty(k, v)
+            if (c.responseCode !in 200..299) throw HttpError(c.responseCode, "HTTP ${c.responseCode}")
+            return JSONObject(c.inputStream.bufferedReader().readText())
+        } finally { c.disconnect() }
+    }
+
+    private fun post(url: String, headers: Map<String, String>, body: JSONObject, readTimeout: Int = 30000): JSONObject {
         val c = URL(url).openConnection() as HttpURLConnection
         try {
             c.requestMethod = "POST"
-            c.connectTimeout = 10000; c.readTimeout = 25000
+            c.connectTimeout = 10000; c.readTimeout = readTimeout
             c.doOutput = true
             c.setRequestProperty("content-type", "application/json")
             for ((k, v) in headers) c.setRequestProperty(k, v)
@@ -131,7 +145,7 @@ class AiChat(private val prefs: Prefs) {
             val code = c.responseCode
             if (code !in 200..299) {
                 val err = try { c.errorStream?.bufferedReader()?.readText()?.take(140) } catch (_: Exception) { null }
-                throw Exception("HTTP $code ${err ?: ""}".trim())
+                throw HttpError(code, "HTTP $code ${err ?: ""}".trim())
             }
             return JSONObject(c.inputStream.bufferedReader().readText())
         } finally { c.disconnect() }
@@ -152,24 +166,88 @@ class AiChat(private val prefs: Prefs) {
         val contents = JSONArray()
         for ((role, content) in history) contents.put(JSONObject().put("role", if (role == "assistant") "model" else "user")
             .put("parts", JSONArray().put(JSONObject().put("text", content))))
-        val body = JSONObject()
-            .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sys))))
-            .put("contents", contents)
-            .put("generationConfig", JSONObject().put("maxOutputTokens", 1024))
+        fun body(thinking: Boolean): JSONObject {
+            val gen = JSONObject().put("maxOutputTokens", 1024)
+            if (thinking) gen.put("thinkingConfig", JSONObject().put("thinkingLevel", "low"))
+            return JSONObject()
+                .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", sys))))
+                .put("contents", contents)
+                .put("generationConfig", gen)
+        }
+        val headers = mapOf("x-goog-api-key" to prefs.geminiKey)
+        fun call(model: String): JSONObject {
+            val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent"
+            return try { post(url, headers, body(true), 45000) } catch (e: HttpError) {
+                if (e.code == 400) post(url, headers, body(false), 45000) else throw e
+            }
+        }
         val model = prefs.geminiModel.ifBlank { "gemini-3.8-flash" }
-        val resp = post("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent", mapOf("x-goog-api-key" to prefs.geminiKey), body)
+        val resp = try { call(model) } catch (e: HttpError) {
+            if (e.code != 404) throw e
+            val better = pickGeminiModel() ?: throw e
+            prefs.geminiModel = better
+            call(better)
+        }
         val parts = resp.optJSONArray("candidates")?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts") ?: return null
         val sb = StringBuilder()
         for (i in 0 until parts.length()) { val o = parts.getJSONObject(i); if (!o.optBoolean("thought", false)) sb.append(o.optString("text")) }
         return sb.toString()
     }
 
+    /** Newest "flash" model this key can use (prefers flash-lite for speed). */
+    private fun pickGeminiModel(): String? {
+        val list = get("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200", mapOf("x-goog-api-key" to prefs.geminiKey)).optJSONArray("models") ?: return null
+        val names = ArrayList<String>()
+        for (i in 0 until list.length()) {
+            val m = list.getJSONObject(i)
+            val methods = m.optJSONArray("supportedGenerationMethods")?.toString() ?: ""
+            val name = m.optString("name").removePrefix("models/")
+            if ("generateContent" in methods && name.contains("flash") && !name.contains("image") && !name.contains("tts") && !name.contains("live") && !name.contains("preview")) names.add(name)
+        }
+        return names.sortedWith(compareByDescending<String> { Regex("(\\d+(?:\\.\\d+)?)").find(it)?.value?.toDoubleOrNull() ?: 0.0 }.thenBy { if (it.contains("lite")) 0 else 1 }).firstOrNull()
+    }
+
     private fun groq(sys: String): String? {
         val msgs = JSONArray().put(JSONObject().put("role", "system").put("content", sys))
         for ((role, content) in history) msgs.put(JSONObject().put("role", role).put("content", content))
-        val body = JSONObject().put("model", prefs.groqModel.ifBlank { "llama-3.3-70b-versatile" }).put("max_tokens", 300).put("messages", msgs)
-        val resp = post("https://api.groq.com/openai/v1/chat/completions", mapOf("Authorization" to "Bearer ${prefs.groqKey}"), body)
-        return resp.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content")
+        val headers = mapOf("Authorization" to "Bearer ${prefs.groqKey}")
+        fun call(model: String): JSONObject {
+            val body = JSONObject().put("model", model).put("max_tokens", 800).put("messages", msgs)
+            if (model.contains("gpt-oss")) body.put("reasoning_effort", "low")
+            return try { post("https://api.groq.com/openai/v1/chat/completions", headers, body) } catch (e: HttpError) {
+                if (e.code == 400 && body.has("reasoning_effort")) { body.remove("reasoning_effort"); post("https://api.groq.com/openai/v1/chat/completions", headers, body) } else throw e
+            }
+        }
+        var model = prefs.groqModel.ifBlank { DEFAULT_GROQ }
+        if (model in RETIRED_GROQ) { model = DEFAULT_GROQ; prefs.groqModel = model }
+        val resp = try { call(model) } catch (e: HttpError) {
+            if (e.code != 404 && e.code != 400) throw e
+            val better = pickGroqModel(model) ?: throw e
+            prefs.groqModel = better
+            call(better)
+        }
+        val text = resp.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")?.optString("content") ?: return null
+        return text.replace(Regex("(?s)<think>.*?</think>"), "").trim()
+    }
+
+    /** Picks a chat model this Groq key can use right now. */
+    private fun pickGroqModel(failed: String): String? {
+        val data = get("https://api.groq.com/openai/v1/models", mapOf("Authorization" to "Bearer ${prefs.groqKey}")).optJSONArray("data") ?: return null
+        val ids = ArrayList<String>()
+        for (i in 0 until data.length()) {
+            val o = data.getJSONObject(i)
+            val id = o.optString("id")
+            if (id == failed || !o.optBoolean("active", true)) continue
+            if (id.contains("whisper") || id.contains("tts") || id.contains("guard") || id.contains("orpheus") || id.contains("prompt")) continue
+            ids.add(id)
+        }
+        val prefer = listOf("openai/gpt-oss-120b", "qwen/qwen3.6-27b", "openai/gpt-oss-20b")
+        return prefer.firstOrNull { it in ids } ?: ids.firstOrNull { it.contains("gpt-oss") || it.contains("qwen") || it.contains("llama") || it.contains("kimi") } ?: ids.firstOrNull()
+    }
+
+    companion object {
+        const val DEFAULT_GROQ = "openai/gpt-oss-120b"
+        val RETIRED_GROQ = setOf("llama-3.3-70b-versatile", "llama-3.1-8b-instant", "llama3-70b-8192", "llama3-8b-8192", "mixtral-8x7b-32768", "gemma2-9b-it")
     }
 
     fun reset() { synchronized(this) { history.clear() } }
